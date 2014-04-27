@@ -3,6 +3,7 @@
 use libc::{c_uchar, c_int, c_ulonglong};
 use rand;
 use rand::{Rng};
+use rand::os::{OSRng};
 use std::mem;
 use std::io::{IoResult, MemWriter, standard_error, OtherIoError};
 use utils::{Readable, Writable};
@@ -175,7 +176,7 @@ impl TotalEq for Key { }
 /// Generate a new key for symmetric encryption.
 pub fn key() -> Key {
     let mut key: [u8, ..KEY] = unsafe { mem::uninit() };
-    rand::task_rng().fill_bytes(key.as_mut_slice());
+    OSRng::new().unwrap().fill_bytes(key.as_mut_slice());
     Key(key)
 }
 
@@ -197,7 +198,7 @@ impl<'a> Nonce {
     /// Generate a new random nonce.
     pub fn random() -> Nonce {
         let mut nonce: [u8, ..NONCE] = unsafe { mem::uninit() };
-        rand::task_rng().fill_bytes(nonce.as_mut_slice());
+        OSRng::new().unwrap().fill_bytes(nonce.as_mut_slice());
         Nonce(nonce)
     }
 
