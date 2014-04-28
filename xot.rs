@@ -1,12 +1,12 @@
 extern crate time;
 
-use std::num::{abs};
 use std::fmt;
 use std::from_str::{FromStr};
 use time::Tm;
-use std::io::{IoResult, MemReader, standard_error, OtherIoError};
+use std::io::{IoResult, MemReader, MemWriter, standard_error, OtherIoError};
 use std::io::net::ip::{SocketAddr};
-use crypt::{Nonce};
+use crypt::{Nonce, Key};
+use utils::{other_error};
 
 mod crypt;
 
@@ -18,45 +18,13 @@ static PORT_MIN:     uint = 33445;
 static PORT_MAX:     uint = 33545;
 static PORT_DEFAULT: uint = PORT_MIN;
 
-pub struct ClientId([u8, ..32]);
-
-impl ClientId {
-    fn dist(&self, other: &ClientId) -> u64 {
-        let &ClientId(ref my) = self;
-        let &ClientId(ref other) = other;
-        let mut dist = 0u64;
-        for i in range(0u,8) {
-            dist = (dist << 8) | abs((my[i] ^ other[i]) as i8) as u64;
-        }
-        dist
-    }
-
-    fn cmp(&self, one: &ClientId, two: &ClientId) -> Ordering {
-        let &ClientId(ref my) = self;
-        let &ClientId(ref one) = one;
-        let &ClientId(ref two) = two;
-        for i in range(0u, my.len()) {
-            let dist1 = abs((my[i] ^ one[i]) as i8);
-            let dist2 = abs((my[i] ^ two[i]) as i8);
-            if dist1 < dist2 {
-                return Less;
-            } else if dist1 > dist2 {
-                return Greater;
-            }
-        }
-        Equal
-    }
-
-    fn sor(&self, slice: &mut [ClientId]) {
-        slice.sort_by(|one, two| { self.cmp(one, two) });
-    }
-}
+pub type ClientId = Key;
 
 impl fmt::Show for ClientId {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let &ClientId(ref my) = self;
+        let my = self.raw();
         for &n in my.iter() {
-            try!(fmt.buf.write_str(format!("{:x}", n)))
+            try!(fmt.buf.write_str(format!("{:x}", n)));
         }
         Ok(())
     }
@@ -66,7 +34,7 @@ impl FromStr for ClientId {
     fn from_str(s: &str) -> Option<ClientId> {
         let mut buf = [0u8, ..32];
         match parse_hex(s, buf.as_mut_slice()) {
-            Ok(_)  => Some(ClientId(buf)),
+            Ok(_)  => Some(Key(buf)),
             Err(_) => None,
         }
     }
@@ -95,11 +63,12 @@ struct Address {
 }
 
 impl fmt::Show for Address {
-    fn format(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.buffer.write_str(format!("{}", self.id));
-        for n in self.nospam.iter() {
-            fmt.buffer.write_str(format!("{:x}", n));
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        try!(fmt.buf.write_str(format!("{}", self.id)));
+        for &n in self.nospam.iter() {
+            try!(fmt.buf.write_str(format!("{:x}", n)));
         }
+        Ok(())
     }
 }
 
@@ -118,6 +87,7 @@ struct Friend<'a> {
 }
 
 impl<'a> Friend<'a> {
+    /*
     pub fn client_id(&'a self) -> &'a ClientId { }
     pub fn delete(self) { }
     pub fn is_connected(&self) -> bool { }
@@ -129,10 +99,11 @@ impl<'a> Friend<'a> {
     pub fn set_typing(&mut self, typing: bool) { }
     pub fn typing(&self) -> bool { }
     pub fn set_send_receipts(&mut self, send: bool) { }
+    */
 }
 
 enum UserStatus {
-    None,
+    NoStatus,
     Away,
     Busy,
     Invalid,
@@ -141,6 +112,7 @@ enum UserStatus {
 struct Rotox;
 
 impl<'a> Rotox {
+    /*
     pub fn address(&self) -> Address { }
     pub fn add_friend(&mut self, addr: Address, msg: &str) -> Result<(),RotoxError> { }
     pub fn friend(&'a mut self, friend: ClientId) -> Option<Friend<'a>> { }
@@ -152,44 +124,11 @@ impl<'a> Rotox {
     pub fn status(&self) -> UserStatus { }
     pub fn friends(&'a mut self) -> &'a [Friend<'a>] { }
 
-    fn handle_ping_request(&mut self, addr: SocketAddr, req: ~MemReader) -> IoResult {
-        let id: ClientId = try!(req.read_struct());
-        let nonce: Nonce = try!(req.read_struct());
-        let key = self.precomputed(id.as_key());
-        let data = try!(req.read_encrypted(key.with_nonce(nonce)));
-
-        self.add_to_ping_list(addr, id);
-
-        let resp = MemWriter::new();
-        nonce = Nonce::random();
-        resp.write_u8(1);
-        resp.write_struct(self.id);
-        resp.write_struct(nonce);
-        resp.write_encrypted(key.with_nonce(nonce), data);
-
-        self.udp_sender.send_to(addr, resp.get_ref());
-    }
-
-    fn handle_ping_response(&mut self, addr: SocketAddr, resp: ~MemReader) -> IoResult {
-        if !self.pinging(addr) {
-            return other_error();
-        }
-        let id: ClientId = try!(req.read_struct());
-        let nonce: Nonce = try!(req.read_struct());
-        let key = self.procomputed(id.as_key());
-        let data = try!(req.read_encrypted(key.with_nonce(nonce)));
-
-        if !self.ping_id(addr) == data {
-            return other_error();
-        }
-        self.add_to_dht(addr, id);
-        Ok(())
-    }
 
     fn handle_get_nodes(&mut self, addr: SocketAddr, req: ~MemReader) -> IoResult {
         let id: ClientId = try!(req.read_struct());
         let nonce: Nonce = try!(req.read_struct());
-        let key = self.precomputed(id.as_key());
+        let key = self.precomputed(id);
         let data = try!(req.read_encrypted(key.with_nonce(nonce)));
 
         let req = MemReader::new(data);
@@ -212,7 +151,7 @@ impl<'a> Rotox {
     fn handle_send_nodes(&mut self, addr: SocketAddr, resp: ~MemReader) -> IoResult {
         let id: ClientId = try!(resp.read_struct());
         let nonce: Nonce = try!(resp.read_struct());
-        let key = self.precomputed(id.as_key());
+        let key = self.precomputed(id);
         let data = try!(resp.read_encrypted());
         if data.len() < 160 /* size of (private data + nonce) in request */ {
             return other_error();
@@ -240,8 +179,5 @@ impl<'a> Rotox {
 
         self.add_to_dht(addr, id);
     }
-}
-
-fn other_error() -> IoResult {
-    Err(standard_error(OtherIoError))
+    */
 }

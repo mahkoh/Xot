@@ -1,5 +1,7 @@
-use std::io::{IoResult, MemWriter, MemReader, BufReader};
+use std::io::{IoResult, MemWriter, MemReader, BufReader, OtherIoError, standard_error};
 use crypt::Machine;
+
+pub mod ringbuffer;
 
 pub trait Writable {
     fn write_to(&self, w: &mut Writer) -> IoResult<()>;
@@ -79,4 +81,8 @@ impl<'a> SlicableReader<'a> for MemReader {
         let pos = self.tell().unwrap() as uint;
         self.get_ref().tailn(pos)
     }
+}
+
+pub fn other_error<T>() -> IoResult<T> {
+    Err(standard_error(OtherIoError))
 }

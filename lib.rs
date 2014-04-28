@@ -1,5 +1,6 @@
 #![crate_id = "xot"]
 #![crate_type = "lib"]
+#![feature(globs)]
 
 extern crate libc;
 extern crate rand;
@@ -11,5 +12,6 @@ pub mod crypt;
 pub mod utils;
 pub mod net;
 pub mod onion;
-
-mod keylocker;
+pub mod keylocker;
+pub mod ping;
+pub mod xot;

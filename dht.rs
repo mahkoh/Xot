@@ -29,7 +29,7 @@ impl DHT {
         try!(packet.write_u8(2));
         try!(packet.write_struct(&self.public));
         try!(packet.write_struct(&nonce));
-        try!(packet.write_encrypted(self.precomputed(id.as_key()).with_nonce(&nonce),
+        try!(packet.write_encrypted(self.precomputed(&id).with_nonce(&nonce),
                                     encrypted.get_ref()));
     }
 }

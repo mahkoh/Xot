@@ -7,6 +7,7 @@ use rand::os::{OSRng};
 use std::mem;
 use std::io::{IoResult, MemWriter, standard_error, OtherIoError};
 use utils::{Readable, Writable};
+use std::num::{abs};
 
 #[link(name = "sodium")]
 extern {
@@ -40,13 +41,13 @@ pub enum MachineType {
     Asymmetric,
 }
 
+/// Structure that can decrypt and encrypt data.
 pub struct Machine<'a> {
     key: &'a Key,
     nonce: &'a Nonce,
     kind: MachineType,
 }
 
-/// Structure that can decrypt and encrypt data.
 impl<'a> Machine<'a> {
     /// Encrypts data and writes to a Writer.
     /// 
@@ -129,7 +130,7 @@ impl<'a> Machine<'a> {
 }
 
 /// A key used for encryption.
-pub struct Key([u8, ..KEY]);
+pub struct Key(pub [u8, ..KEY]);
 
 impl<'a> Key {
     /// Get the internal buffer.
@@ -145,6 +146,36 @@ impl<'a> Key {
             nonce: nonce,
             kind: Symmetric,
         }
+    }
+
+    pub fn dist(&self, other: &Key) -> u64 {
+        let &Key(ref my) = self;
+        let &Key(ref other) = other;
+        let mut dist = 0u64;
+        for i in range(0u,8) {
+            dist = (dist << 8) | abs((my[i] ^ other[i]) as i8) as u64;
+        }
+        dist
+    }
+
+    pub fn cmp(&self, one: &Key, two: &Key) -> Ordering {
+        let &Key(ref my) = self;
+        let &Key(ref one) = one;
+        let &Key(ref two) = two;
+        for i in range(0u, my.len()) {
+            let dist1 = abs((my[i] ^ one[i]) as i8);
+            let dist2 = abs((my[i] ^ two[i]) as i8);
+            if dist1 < dist2 {
+                return Less;
+            } else if dist1 > dist2 {
+                return Greater;
+            }
+        }
+        Equal
+    }
+
+    pub fn sort(&self, slice: &mut [Key]) {
+        slice.sort_by(|one, two| { self.cmp(one, two) });
     }
 }
 
