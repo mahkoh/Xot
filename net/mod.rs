@@ -5,6 +5,7 @@ use libc::{AF_INET, AF_INET6};
 use sockets::{UdpWriter, UdpReader};
 
 mod sockets;
+pub mod ludp;
 
 impl Writable for SocketAddr {
     fn write_to(&self, writer: &mut Writer) -> IoResult<()> {
@@ -93,6 +94,9 @@ pub mod consts {
     pub static ANNOUNCE_RESPONSE:   u8 = 132;
     pub static ONION_DATA_RESPONSE: u8 = 134;
 }
+
+pub type LLRcv = Receiver<(SocketAddr, MemReader)>;
+pub type LLSnd = Sender<(SocketAddr, MemReader)>;
 
 struct LowLevelHandler {
     sender: UdpWriter,

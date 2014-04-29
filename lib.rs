@@ -1,6 +1,7 @@
 #![crate_id = "xot"]
 #![crate_type = "lib"]
 #![feature(globs)]
+#![feature(macro_rules)]
 
 extern crate libc;
 extern crate rand;

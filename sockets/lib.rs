@@ -246,7 +246,6 @@ impl UdpSocket {
     /// and writer parts.
     pub fn start(self) -> (UdpWriter, UdpReader) {
         let (sender, receiver) = channel();
-        let Pipe { input, out } = pipe();
 
         let raw = unsafe { self.sock.raw() };
         native::task::spawn(proc() {
@@ -256,8 +255,7 @@ impl UdpSocket {
             loop {
                 let mut s = FdSet::zero();
                 s.set(raw);
-                s.set(input);
-                if s.read().is_err() || s.is_set(input) {
+                if s.read().is_err() {
                     break;
                 }
                 let mut len = mem::size_of_val(&addr) as socklen_t;
@@ -277,12 +275,11 @@ impl UdpSocket {
                 };
                 sender.send((addr, Vec::from_slice(buf.slice_to(rv as uint))));
             }
-            unsafe { close(input); }
         });
 
         let sock = Arc::new(self.sock);
         ( UdpWriter { sock: sock.clone() },
-          UdpReader { sock: sock.clone(), output: receiver, killer: out })
+          UdpReader { sock: sock.clone(), output: receiver })
     }
 }
 
@@ -290,7 +287,6 @@ impl UdpSocket {
 pub struct UdpReader {
     sock: Arc<PlainSocket>,
     output: Receiver<(SocketAddr, Vec<u8>)>,
-    killer: c_int,
 }
 
 impl UdpReader {
@@ -308,8 +304,7 @@ impl UdpReader {
 impl Drop for UdpReader {
     fn drop(&mut self) {
         unsafe {
-            write(self.killer, [0u8, 10].as_ptr() as *_, 10);
-            close(self.killer);
+            shutdown(self.sock.raw(), SOCK_RD);
         }
     }
 }

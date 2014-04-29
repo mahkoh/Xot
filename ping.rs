@@ -1,6 +1,8 @@
 use std::io::net::ip::{SocketAddr};
 use std::io::{IoResult, MemReader, MemWriter};
+use std::io::timer::{Timer};
 use crypt::{Nonce, Key, PrecomputedKey};
+use net::{LLRcv, LLSnd};
 use net::consts::{PING_REQUEST, PING_RESPONSE};
 use utils::{other_error, StructReader, StructWriter, CryptoReader, CryptoWriter};
 use utils::ringbuffer::{RingBuffer};
@@ -12,7 +14,7 @@ use rand::{task_rng, Rng};
 
 static MAX_PINING:   uint = 512;
 static MAX_TO_PING:  uint = 16;
-static TIME_TO_PING: uint = 5;
+static TIME_TO_PING: u64 = 5;
 static PING_TIMEOUT: i64  = 3;
 
 struct Ping {
@@ -29,8 +31,6 @@ impl Ping {
 
 struct Pinger {
     udp: UdpWriter,
-    ping_request: Receiver<(SocketAddr, MemReader)>,
-    ping_response: Receiver<(SocketAddr, MemReader)>,
     locker: Keylocker,
     to_ping: [Option<(SocketAddr, ClientId)>, ..MAX_TO_PING],
     pinging: RingBuffer<Ping>,
@@ -38,6 +38,19 @@ struct Pinger {
 }
 
 impl Pinger {
+    fn run(&mut self, req: LLRcv, rsp: LLRcv) {
+        let mut timer = Timer::new().unwrap();
+        let periodic = timer.periodic(TIME_TO_PING * 1000);
+
+        loop {
+            select!(
+                ()           = periodic.recv()      => self.ping(),
+                (addr, data) = req.recv() => {self.handle_ping_request(addr, data);},
+                (addr, data) = rsp.recv() => {self.handle_ping_response(addr, data);}
+            );
+        }
+    }
+
     fn precomputed<'b>(&'b mut self, public: &Key) -> &'b PrecomputedKey {
         self.locker.get(public)
     }
@@ -97,6 +110,7 @@ impl Pinger {
                 Some(x) => x,
                 None => continue,
             };
+            self.to_ping[i] = None;
             if self.ping_id(addr).is_some() {
                 continue;
             }
@@ -118,7 +132,6 @@ impl Pinger {
             if self.udp.send_to(addr, packet.get_ref()).is_ok() {
                 self.add_pinging(addr, ping_id);
             }
-            self.to_ping[i] = None;
         }
     }
 
