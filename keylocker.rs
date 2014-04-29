@@ -1,17 +1,25 @@
+//! Container for precomputed keys.
+//!
+//! We use these lockers to avoid unnecessary key computations.
+
 use crypt::{Key, PrecomputedKey};
 use time::{get_time};
 use std::{u8,u64};
 use std::cast::{transmute_lifetime};
 
+/// Time in seconds before the precomputed key is considered dead.
 static TIMEOUT:       i64 = 600;
 static KEYS_PER_SLOT: uint = 4u; // it's a plenty big number
+/// Total number of keys in the locker.
 static TOTAL:         uint = (u8::MAX as uint + 1u) * KEYS_PER_SLOT;
 
+/// An object that holds precomputed keys.
 pub struct Keylocker {
     secret: Key,
     holes: [Option<Entry>, ..TOTAL]
 }
 
+/// An entry in the Keylocker.
 struct Entry {
     id: Key,
     computed: PrecomputedKey,
@@ -20,16 +28,22 @@ struct Entry {
 }
 
 impl Entry {
+    /// Check if the entry has outlived its usefulness. 
     fn timed_out(&self) -> bool {
         self.last_requested + TIMEOUT < get_time().sec
     }
 }
 
 impl<'a> Keylocker {
+    /// Create a new keylocker with secret key `secret`.
     pub fn new(secret: Key) -> Keylocker {
         Keylocker { secret: secret, holes: [None, ..TOTAL] }
     }
 
+    /// Gets the precomputed key associated with `public` from the locker.
+    ///
+    /// If the key isn't in the locker yet, it's computed and possibly replaces another
+    /// key.
     pub fn get(&'a mut self, public: &Key) -> &'a PrecomputedKey {
         let mut replacable = 0u;
         let mut min_requested = u64::MAX;

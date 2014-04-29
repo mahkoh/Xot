@@ -1,3 +1,16 @@
+//! The layer handling onion requests and responses.
+//!
+//! The onion consists of five-step paths connecting two nodes.
+//! Every path has three intermediate steps called levels 0, 1, and 2.
+//! This means that a complete onion path looks like this:
+//! ```
+//! - Sender
+//! - Level 0
+//! - Level 1
+//! - Level 2
+//! - Receiver
+//! ```
+
 use crypt::{PrecomputedKey, Key, Nonce, NONCE};
 use std::io::{MemWriter, MemReader, IoResult, standard_error, OtherIoError};
 use std::io::net::ip::{SocketAddr};
@@ -6,16 +19,23 @@ use utils::{StructWriter, StructReader, CryptoWriter, FiniteReader, SlicableRead
 use sockets::{UdpWriter};
 use keylocker::{Keylocker};
 
+/// A node in the onion network.
 pub struct OnionNode {
-    encoder: PrecomputedKey,
+    /// Our public key generated specifically for this node.
     public: Key,
+    /// The key precomputed from the peer's public key and the private key which
+    /// corresponds to the public key above.
+    encoder: PrecomputedKey,
+    /// The address of the node.
     addr: SocketAddr,
 }
 
+/// The intemediate steps in an onion request.
 pub struct OnionPath {
     nodes: [OnionNode, ..3],
 }
 
+/// The object running the onion layer.
 pub struct Onion<'a> {
     sender: &'a mut UdpWriter,
     locker: &'a mut Keylocker,
@@ -26,6 +46,7 @@ impl<'a, 'b> Onion<'a> {
     pub fn send(&mut self, path: &OnionPath, dest: SocketAddr, data: &[u8]) {
         let _ = self.send_to_level_0(path, dest, data);
     }
+
 
     fn precomputed<'b>(&'b mut self, public: &Key) -> &'b PrecomputedKey {
         self.locker.get(public)

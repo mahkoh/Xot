@@ -1,6 +1,7 @@
 use std::mem::{replace};
 use std::ptr::{copy_nonoverlapping_memory};
 
+/// A ring buffer with fixed capacity.
 pub struct RingBuffer<T> {
     len: uint,
     front: uint,
@@ -8,6 +9,7 @@ pub struct RingBuffer<T> {
 }
 
 impl<'a, T> RingBuffer<T> {
+    /// Creates a new `RingBuffer` with capacity `c`.
     pub fn new(cap: uint) -> RingBuffer<T> {
         RingBuffer {
             len: 0,
@@ -16,6 +18,7 @@ impl<'a, T> RingBuffer<T> {
         }
     }
 
+    /// Adds an element to the end of the buffer, possibly overwriting the front.
     pub fn push(&mut self, v: T) {
         let end = (self.front + self.len) % self.buf.len();
         *self.buf.get_mut(end) = Some(v);
@@ -26,6 +29,7 @@ impl<'a, T> RingBuffer<T> {
         }
     }
 
+    /// Pops an element from the front of the buffer if the buffer is not empty.
     pub fn pop(&mut self) -> Option<T> {
         if self.len == 0 {
             return None;
@@ -36,6 +40,7 @@ impl<'a, T> RingBuffer<T> {
         val
     }
 
+    /// Returns a reference to the front of the buffer without removing the element.
     pub fn peek(&'a mut self) -> Option<&'a T> {
         if self.len == 0 {
             return None;
@@ -43,6 +48,7 @@ impl<'a, T> RingBuffer<T> {
         self.buf.get_mut(self.front).as_ref()
     }
 
+    /// Creates an iterator over all elements from front to back.
     pub fn iter(&'a self) -> RingBufIter<'a, T> {
         RingBufIter {
             pos: 0,
@@ -67,12 +73,25 @@ impl<'a, T> Iterator<&'a T> for RingBufIter<'a, T> {
     }
 }
 
+/// A fixed size buffer with holes.
+/// 
+/// ```rust
+/// let mut buf = XBuffer::new(2);
+/// buf.set_pos(1, 1.0);
+/// assert!(buf.has(1));
+/// assert_eq!(buf.pop(), None);
+/// buf.set_pos(0, 2.0);
+/// assert_eq!(buf.pop(), Some(2.0));
+/// assert!(!buf.has(1));
+/// assert_eq!(buf.pop(), Some(1.0));
+/// ```
 pub struct XBuffer<T> {
     front: uint,
     buf: Vec<Option<T>>,
 }
 
 impl<T> XBuffer<T> {
+    /// Creates a new buffer with capacity `cap`.
     pub fn new(cap: uint) -> XBuffer<T> {
         assert!(cap > 0);
         XBuffer {
@@ -81,6 +100,7 @@ impl<T> XBuffer<T> {
         }
     }
 
+    /// Resizes the buffer by copying all elements.
     pub fn resize(&mut self, cap: uint) {
         let prev_cap = self.buf.len();
         assert!(cap >= prev_cap);
@@ -106,11 +126,17 @@ impl<T> XBuffer<T> {
         self.buf = buf;
     }
 
+    /// Sets the value at point `pos` in the buffer to `val`.
+    ///
+    /// `pos` is relative to the front of the buffer.
     pub fn set_pos(&mut self, pos: uint, val: T) {
         let cap = self.buf.len();
         *self.buf.get_mut((self.front + pos) % cap) = Some(val);
     }
 
+    /// Pops the front element from the buffer if the front element is set.
+    ///
+    /// Otherwise the front isn't changed and `None` is returned.
     pub fn pop(&mut self) -> Option<T> {
         if self.buf.get(self.front).is_some() {
             let rv = replace(self.buf.get_mut(self.front), None);
@@ -121,10 +147,12 @@ impl<T> XBuffer<T> {
         }
     }
 
+    /// Returns the capacity of the buffer.
     pub fn cap(&self) -> uint {
         self.buf.len()
     }
 
+    /// Returns if position `pos` has a set value.
     pub fn has(&self, pos: uint) -> bool {
         self.buf.get(pos).is_some()
     }

@@ -1,3 +1,5 @@
+//! The layer which handles ping requests and responses.
+
 use std::io::net::ip::{SocketAddr};
 use std::io::{IoResult, MemReader, MemWriter};
 use std::io::timer::{Timer};
@@ -12,32 +14,48 @@ use keylocker::{Keylocker};
 use xot::{ClientId};
 use rand::{task_rng, Rng};
 
+/// Maximum number of peers whose pongs we're waiting for.
 static MAX_PINING:   uint = 512;
+/// Maximum number of peers we send a ping to every `TIME_TO_PING` seconds.
 static MAX_TO_PING:  uint = 16;
+/// How long we wait between pings.
 static TIME_TO_PING: u64 = 5;
+/// Time before a ping request is considered timed out.
 static PING_TIMEOUT: i64  = 3;
 
+/// An object which represents a ping request.
 struct Ping {
+    /// Adderss of the peer we're pinging.
     addr: SocketAddr,
+    /// Time when we sent the ping.
     time: i64,
+    /// Secret ping id we sent with the ping.
     id: u64,
 }
 
 impl Ping {
+    /// Check if the ping request has timed out.
     fn timed_out(&self) -> bool {
         self.time + PING_TIMEOUT < get_time().sec
     }
 }
 
+/// Object running the ping task.
 struct Pinger {
     udp: UdpWriter,
     locker: Keylocker,
+    /// List of peers we've to ping during the next interval.
     to_ping: [Option<(SocketAddr, ClientId)>, ..MAX_TO_PING],
+    /// List of pings we've sent.
     pinging: RingBuffer<Ping>,
+    /// The public key we're signing our pings with.
     public: ClientId,
 }
 
 impl Pinger {
+    /// The main loop.
+    /// 
+    /// Checks for incoming pings and pongs, and pings the peers regularly.
     fn run(&mut self, req: LLRcv, rsp: LLRcv) {
         let mut timer = Timer::new().unwrap();
         let periodic = timer.periodic(TIME_TO_PING * 1000);
@@ -51,10 +69,12 @@ impl Pinger {
         }
     }
 
+    /// Get a precomputed key from the locker.
     fn precomputed<'b>(&'b mut self, public: &Key) -> &'b PrecomputedKey {
         self.locker.get(public)
     }
 
+    /// Add a peer to the to-be-pinged list if it's closer than the other ones.
     fn add_to_ping(&mut self, addr: SocketAddr, id: &ClientId) {
         for ping in self.to_ping.as_mut_slice().mut_iter() {
             if ping.is_none() {
@@ -72,6 +92,7 @@ impl Pinger {
         }
     }
 
+    /// Remove timed-out elements from the `pinging` list.
     fn remove_timeouts(&mut self) {
         loop {
             match self.pinging.peek() {
@@ -86,6 +107,7 @@ impl Pinger {
         }
     }
 
+    /// Get's the ping id which we sent to `addr` if any.
     fn ping_id(&self, addr: SocketAddr) -> Option<u64> {
         for ping in self.pinging.iter() {
             if ping.addr == addr {
@@ -95,6 +117,7 @@ impl Pinger {
         return None;
     }
 
+    /// Adds `addr` and `ping_id` to the `pinging` list.
     fn add_pinging(&mut self, addr: SocketAddr, ping_id: u64) {
         self.remove_timeouts();
         self.pinging.push(Ping {
@@ -104,6 +127,7 @@ impl Pinger {
         });
     }
 
+    /// Pings all elements in `to_ping` and clears `to_ping` afterwards.
     fn ping(&mut self) {
         for i in range(0, MAX_TO_PING) {
             let (addr, id) = match self.to_ping[i] {
@@ -135,6 +159,7 @@ impl Pinger {
         }
     }
 
+    /// Adds the peer to the `to_ping` list and pongs him immediately.
     fn handle_ping_request(&mut self, addr: SocketAddr,
                            mut req: MemReader) -> IoResult<()> {
         let id: Key = try!(req.read_struct());
@@ -154,6 +179,7 @@ impl Pinger {
         self.udp.send_to(addr, resp.get_ref())
     }
 
+    /// Checks if the ping id is correct and adds the peer to the DHT.
     fn handle_ping_response(&mut self, addr: SocketAddr,
                             mut resp: MemReader) -> IoResult<()> {
         let ping_id = match self.ping_id(addr) {
