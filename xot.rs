@@ -18,6 +18,72 @@ static PORT_MIN:     uint = 33445;
 static PORT_MAX:     uint = 33545;
 static PORT_DEFAULT: uint = PORT_MIN;
 
+/////////////////////////////////////////////////
+// ClientAddr
+/////////////////////////////////////////////////
+
+pub struct ClientAddr {
+    id: ClientId,
+    nospam: [u8, ..2],
+}
+
+impl ClientAddr {
+    fn checksum(&self) -> [u8, ..2] {
+        let check = [0u8, 0u8];
+        let Key(ref key) = self.id;
+        for (i, x) in key.enumerate() {
+            check[i % 2] ^= x;
+        }
+        check[(crypt::KEY + 0) % 2] ^= self.nospam[0];
+        check[(crypt::KEY + 1) % 2] ^= self.nospam[1];
+        check
+    }
+}
+
+impl fmt::Show for ClientAddr {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        self.id.fmt(fmt);
+        try!(fmt.buf.write_str(format!("{:x}", self.nospam[0])));
+        try!(fmt.buf.write_str(format!("{:x}", self.nospam[1])));
+        let checksum = self.checksum();
+        try!(fmt.buf.write_str(format!("{:x}", checksum[0])));
+        try!(fmt.buf.write_str(format!("{:x}", checksum[1])));
+        Ok(())
+    }
+}
+
+impl FromStr for ClientAddr {
+    fn from_str(s: &str) -> Option<ClientAddr> {
+        if s.len() != 2 * (crypt::KEY + 2 + 2) {
+            return None;
+        }
+
+        let mut id     = [0u8, ..32];
+        let mut nospam = [0u8, ..2];
+        let mut check  = [0u8, ..2];
+
+        if parse_hex(s.slice(0, crypt::KEY), buf.as_mut_slice()).is_err() {
+            return None;
+        }
+        if parse_hex(s.slice(crypt::KEY, crypt::KEY+2), nospam.as_mut_slice()).is_err() {
+            return None;
+        }
+        if parse_hex(s.slice(crypt::KEY+2, crypt::KEY+4), check.as_mut_slice()).is_err() {
+            return None;
+        }
+
+        let addr = ClientAddr { id: Key(id), nospam: nospam };
+        if addr.checksum().as_slice() != checksum.as_slice() {
+            return None;
+        }
+        addr
+    }
+}
+
+/////////////////////////////////////////////////
+// ClientId
+/////////////////////////////////////////////////
+
 pub type ClientId = Key;
 
 impl fmt::Show for ClientId {
@@ -40,78 +106,65 @@ impl FromStr for ClientId {
     }
 }
 
-fn parse_hex(s: &str, buf: &mut [u8]) -> Result<(),()> {
-    if s.len() != 2*buf.len() {
-        return Err(());
+///////////////////////////////////////////
+// Friend
+///////////////////////////////////////////
+
+struct Friend {
+    id:        ClientId,
+    messenger: MessengerControler,
+    dht:       DHTControler,
+}
+
+impl<'a> Friend {
+    pub fn id(&'a self) -> &'a ClientId {
+        &self.id
     }
-    for i in range(0u, buf.len()) {
-        for j in range(0u, 2) {
-            buf[i] = (buf[i] << 4) + match s[2*i + j] as char {
-                c @ '0' .. '9' => (c as u8) - ('0' as u8),
-                c @ 'a' .. 'f' => (c as u8) - ('a' as u8) + 10,
-                c @ 'A' .. 'F' => (c as u8) - ('A' as u8) + 10,
-                _              => return Err(()),
-            }
-        }
+
+    pub fn delete(self) {
+        self.messenger.delete(self.id.clone());
     }
-    return Ok(());
-}
 
-struct Address {
-    id: ClientId,
-    nospam: [u8, ..4],
-}
+    pub fn status(&self) -> FriendStatus {
+        self.messenger.status(self.id.clone())
+    }
 
-impl fmt::Show for Address {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        try!(fmt.buf.write_str(format!("{}", self.id)));
-        for &n in self.nospam.iter() {
-            try!(fmt.buf.write_str(format!("{:x}", n)));
-        }
-        Ok(())
+    pub fn message(&self, msg: ~str) -> u64 {
+        self.messenger.message(self.id.clone(), msg)
+    }
+
+    pub fn action(&self, msg: ~str) -> u64 {
+        self.messenger.action(self.id.clone(), msg)
+    }
+
+    pub fn status_message(&self) -> ~str {
+        self.messenger.status_message(self.id.clone())
+    }
+
+    pub fn last_online(&self) -> Tm {
+        self.messenger.last_online(self.id.clone())
+    }
+
+    pub fn set_typing(&self, typing: bool) {
+        self.messenger.set_typing(self.id.clone(), typing)
+    }
+
+    pub fn typing(&self) -> bool {
+        self.messenger.typing(self.id.clone())
+    }
+
+    pub fn set_send_receipts(&self, send: bool) {
+        self.messenger.set_send_receipts(self.id.clone(), send)
     }
 }
 
-enum RotoxError {
-    MessageTooLong,
-    NoMessage,
-    OwnKey,
-    AlreadyInvited,
-    Unknown,
-    BadChecksum,
-}
+///////////////////////////////////////////
+// Xot
+///////////////////////////////////////////
 
-struct Friend<'a> {
-    tox: &'a Rotox,
-    id: uint,
-}
+struct Xot;
 
-impl<'a> Friend<'a> {
-    /*
-    pub fn client_id(&'a self) -> &'a ClientId { }
-    pub fn delete(self) { }
-    pub fn is_connected(&self) -> bool { }
-    pub fn send(&mut self, msg: &str) -> u64 { }
-    pub fn action(&mut self, msg: &str) -> u64 { }
-    pub fn status_message(&'a self) -> &'a str { }
-    pub fn status(&self) -> UserStatus { }
-    pub fn last_online(&self) -> Tm { }
-    pub fn set_typing(&mut self, typing: bool) { }
-    pub fn typing(&self) -> bool { }
-    pub fn set_send_receipts(&mut self, send: bool) { }
-    */
-}
-
-enum UserStatus {
-    NoStatus,
-    Away,
-    Busy,
-    Invalid,
-}
-
-struct Rotox;
-
-impl<'a> Rotox {
+impl<'a> Xot {
     /*
     pub fn address(&self) -> Address { }
     pub fn add_friend(&mut self, addr: Address, msg: &str) -> Result<(),RotoxError> { }
@@ -123,61 +176,5 @@ impl<'a> Rotox {
     pub fn set_status(&mut self, status: UserStatus) { }
     pub fn status(&self) -> UserStatus { }
     pub fn friends(&'a mut self) -> &'a [Friend<'a>] { }
-
-
-    fn handle_get_nodes(&mut self, addr: SocketAddr, req: ~MemReader) -> IoResult {
-        let id: ClientId = try!(req.read_struct());
-        let nonce: Nonce = try!(req.read_struct());
-        let key = self.precomputed(id);
-        let data = try!(req.read_encrypted(key.with_nonce(nonce)));
-
-        let req = MemReader::new(data);
-        let req_id: ClientId = try!(req.read_struct());
-        let close_nodes = self.close_nodes(req_id);
-
-        let plain = MemWriter::new(data);
-        plain.write_struct(close_nodes);
-        plain.write(req.slice_to_end());
-
-        let resp = MemWriter::new();
-        nonce = Nonce::random();
-        resp.write_u8(3);
-        resp.write_struct(nonce);
-        resp.write_encrypted(key.with_nonce(nonce), plain.get_ref());
-
-        self.udp_sender.send_to(addr, resp.get_ref())
-    }
-
-    fn handle_send_nodes(&mut self, addr: SocketAddr, resp: ~MemReader) -> IoResult {
-        let id: ClientId = try!(resp.read_struct());
-        let nonce: Nonce = try!(resp.read_struct());
-        let key = self.precomputed(id);
-        let data = try!(resp.read_encrypted());
-        if data.len() < 160 /* size of (private data + nonce) in request */ {
-            return other_error();
-        }
-
-        let nodes = data.slice(0, data.len() - 160);
-        let nodes: Vec<Node4> = try!(BufReader::new(nodes).read_struct());
-
-        let private = BufReader::new(data.slice_from(data.len() - 160));
-        nonce = try!(private.read_struct());
-        data = try!(private.read_encrypted(self.symmetric.with_nonce(nonce)));
-        private = BufReader::new(data);
-        let time = try!(private.read_be_u64());
-        if Ping::timed_out(time) {
-            return other_error();
-        }
-        let nf: Node4 = try!(private.read_struct());
-        if nf.addr != addr || nf.id != id {
-            return other_error();
-        }
-        let nf: Node4 = try!(private.read_struct());
-        if nf.not_empty() {
-            /* sendback */
-        }
-
-        self.add_to_dht(addr, id);
-    }
     */
 }

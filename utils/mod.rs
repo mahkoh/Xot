@@ -143,3 +143,20 @@ impl<'a> Writable for &'a [u32] {
         Ok(())
     }
 }
+
+pub fn parse_hex(s: &str, buf: &mut [u8]) -> Result<(),()> {
+    if s.len() != 2*buf.len() {
+        return Err(());
+    }
+    for i in range(0u, buf.len()) {
+        for j in range(0u, 2) {
+            buf[i] = (buf[i] << 4) + match s[2*i + j] as char {
+                c @ '0' .. '9' => (c as u8) - ('0' as u8),
+                c @ 'a' .. 'f' => (c as u8) - ('a' as u8) + 10,
+                c @ 'A' .. 'F' => (c as u8) - ('A' as u8) + 10,
+                _              => return Err(()),
+            }
+        }
+    }
+    return Ok(());
+}
