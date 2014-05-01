@@ -8,6 +8,7 @@ use std::mem;
 use std::io::{IoResult, MemWriter, standard_error, OtherIoError};
 use utils::{Readable, Writable};
 use std::num::{abs};
+use std::intrinsics::{volatile_set_memory};
 
 #[link(name = "sodium")]
 extern {
@@ -179,6 +180,20 @@ impl<'a> Key {
     }
 }
 
+impl Drop for Key {
+    fn drop(&mut self) {
+        let &Key(ref mut key) = self;
+        unsafe { volatile_set_memory(key as *mut u8, 0, KEY); }
+    }
+}
+
+impl Clone for Key {
+    fn clone(&self) -> Key {
+        let &Key(key) = self;
+        Key(key)
+    }
+}
+
 impl Writable for Key {
     fn write_to(&self, w: &mut Writer) -> IoResult<()> {
         let &Key(ref key) = self;
@@ -267,6 +282,7 @@ impl Readable for Nonce {
 }
 
 /// An encoder used for public key encryption and decryption.
+#[deriving(Clone)]
 pub struct PrecomputedKey {
     key: Key,
 }

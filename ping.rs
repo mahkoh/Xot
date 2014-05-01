@@ -78,7 +78,7 @@ impl Pinger {
     fn add_to_ping(&mut self, addr: SocketAddr, id: &ClientId) {
         for ping in self.to_ping.as_mut_slice().mut_iter() {
             if ping.is_none() {
-                *ping = Some((addr, *id));
+                *ping = Some((addr, id.clone()));
                 return;
             }
         }
@@ -86,7 +86,7 @@ impl Pinger {
             let &(ref mut refaddr, ref mut refid) = ping.as_mut().unwrap();
             if self.public.cmp(id, refid) == Less {
                 *refaddr = addr;
-                *refid = *id;
+                *refid = id.clone();
                 return;
             }
         }
@@ -131,7 +131,7 @@ impl Pinger {
     fn ping(&mut self) {
         for i in range(0, MAX_TO_PING) {
             let (addr, id) = match self.to_ping[i] {
-                Some(x) => x,
+                Some(ref x) => x.clone(),
                 None => continue,
             };
             self.to_ping[i] = None;
@@ -164,14 +164,14 @@ impl Pinger {
                            mut req: MemReader) -> IoResult<()> {
         let id: Key = try!(req.read_struct());
         let mut nonce: Nonce = try!(req.read_struct());
-        let key = *self.precomputed(&id);
+        let key = self.precomputed(&id).clone();
         let data = try!(req.read_encrypted(&key.with_nonce(&nonce)));
 
         self.add_to_ping(addr, &id);
 
         let mut resp = MemWriter::new();
         nonce = Nonce::random();
-        try!(resp.write_u8(1));
+        try!(resp.write_u8(PING_RESPONSE));
         try!(resp.write_struct(&self.public));
         try!(resp.write_struct(&nonce));
         try!(resp.write_encrypted(&key.with_nonce(&nonce), data.as_slice()));

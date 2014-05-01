@@ -18,11 +18,20 @@ impl<'a, T> RingBuffer<T> {
         }
     }
 
+    pub fn resize(&mut self, cap: uint) {
+        assert!(cap >= self.buf.len());
+        if cap == self.buf.len() {
+            return;
+        }
+        unsafe { resize_ring(&mut self.buf, self.front, cap); }
+        self.front = 0;
+    }
+
     /// Adds an element to the end of the buffer, possibly overwriting the front.
     pub fn push(&mut self, v: T) {
         let end = (self.front + self.len) % self.buf.len();
         *self.buf.get_mut(end) = Some(v);
-        if self.len == self.buf.capacity() {
+        if self.len == self.buf.len() {
             self.front = (self.front + 1) % self.buf.len();
         } else {
             self.len += 1;
@@ -69,7 +78,7 @@ impl<'a, T> Iterator<&'a T> for RingBufIter<'a, T> {
         }
         self.pos += 1;
         self.buf.buf.get((self.buf.front + self.pos - 1)
-                           % self.buf.buf.capacity()).as_ref()
+                           % self.buf.buf.len()).as_ref()
     }
 }
 
@@ -107,23 +116,8 @@ impl<T> XBuffer<T> {
         if cap == prev_cap {
             return;
         }
-        let mut buf = Vec::with_capacity(cap);
-        unsafe {
-            let mut buf_ptr = buf.as_mut_ptr();
-            let prev_ptr = self.buf.as_ptr();
-            copy_nonoverlapping_memory(buf_ptr, prev_ptr.offset(self.front as int),
-                                       prev_cap - self.front);
-            buf_ptr = buf_ptr.offset(prev_cap as int - self.front as int);
-            copy_nonoverlapping_memory(buf_ptr, prev_ptr, self.front);
-            for _ in range(0, cap-prev_cap) {
-                buf_ptr = buf_ptr.offset(1);
-                *buf_ptr = None;
-            }
-            self.buf.set_len(0);
-            buf.set_len(cap);
-        }
+        unsafe { resize_ring(&mut self.buf, self.front, cap); }
         self.front = 0;
-        self.buf = buf;
     }
 
     /// Sets the value at point `pos` in the buffer to `val`.
@@ -156,4 +150,25 @@ impl<T> XBuffer<T> {
     pub fn has(&self, pos: uint) -> bool {
         self.buf.get(pos).is_some()
     }
+}
+
+/// Creates a new vector and copies the old one.
+///
+/// `cap` must be larger than the old capacity.
+unsafe fn resize_ring<T>(old: &mut Vec<Option<T>>, front: uint, cap: uint) {
+    let old_cap = old.len();
+    let mut new = Vec::with_capacity(cap);
+    let mut new_ptr = new.as_mut_ptr();
+    let old_ptr = old.as_ptr();
+    copy_nonoverlapping_memory(new_ptr, old_ptr.offset(front as int),
+                               old_cap - front);
+    new_ptr = new_ptr.offset(old_cap as int - front as int);
+    copy_nonoverlapping_memory(new_ptr, old_ptr, front);
+    for _ in range(0, cap-old_cap) {
+        new_ptr = new_ptr.offset(1);
+        *new_ptr = None;
+    }
+    old.set_len(0);
+    new.set_len(cap);
+    *old = new;
 }

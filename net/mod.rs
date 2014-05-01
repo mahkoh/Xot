@@ -5,7 +5,6 @@ use libc::{AF_INET, AF_INET6};
 use sockets::{UdpWriter, UdpReader};
 
 mod sockets;
-pub mod ludp;
 
 impl Writable for SocketAddr {
     fn write_to(&self, writer: &mut Writer) -> IoResult<()> {

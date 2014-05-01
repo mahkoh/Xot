@@ -13,13 +13,13 @@ use std::mem::{size_of, to_be16, from_be16};
 use std::cast::{transmute};
 use std::io::net::ip::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::io::{IoResult, IoError};
-use std::os::{pipe, Pipe};
 use sync::Arc;
 
 use libc::{c_int, c_void, socklen_t, sockaddr_storage, sockaddr_in, sockaddr_in6,
            sa_family_t, sockaddr, size_t};
-use libc::{socket, setsockopt, fcntl, close, bind, sendto, write, recvfrom};
+use libc::{socket, setsockopt, fcntl, close, bind, sendto, recvfrom, shutdown};
 use libc::{SOCK_DGRAM, SOCK_STREAM, AF_INET, AF_INET6, IPPROTO_TCP};
+use libc::consts::os::bsd44::{SHUT_RD};
 
 use native::io::net::{sock_t};
 
@@ -304,7 +304,7 @@ impl UdpReader {
 impl Drop for UdpReader {
     fn drop(&mut self) {
         unsafe {
-            shutdown(self.sock.raw(), SOCK_RD);
+            shutdown(self.sock.raw(), SHUT_RD);
         }
     }
 }
@@ -316,7 +316,7 @@ pub struct UdpWriter {
 
 impl UdpWriter {
     /// Write `data` to `ipp`.
-    pub fn send_to(&mut self, ipp: SocketAddr, data: &[u8]) -> IoResult<()> {
+    pub fn send_to(&self, ipp: SocketAddr, data: &[u8]) -> IoResult<()> {
         let addr = SockAddr::new(ipp);
         let rv = unsafe {
             sendto(self.sock.raw(), data.as_ptr() as *_, data.len() as size_t, 0,

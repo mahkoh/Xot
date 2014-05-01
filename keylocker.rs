@@ -75,7 +75,7 @@ impl<'a> Keylocker {
         }
 
         self.holes[replacable] = Some(Entry {
-            id: *public,
+            id: public.clone(),
             computed: PrecomputedKey::new(&self.secret, public),
             request_count: 1,
             last_requested: get_time().sec,
