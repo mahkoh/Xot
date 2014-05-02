@@ -112,6 +112,12 @@ impl<'a> Client<'a> {
         }
     }
 
+    fn ping(&self) -> IoResult<()> {
+        self.crypto.send_packet(self.addr.clone, vec!(PING));
+        self.raw.last_ping = get_time().sec;
+        Ok(())
+    }
+
     fn handle_user_status(&self, mut data: MemReader) -> IoResult<()> {
         let status = try!(data.read_u8());
         let status = try!(UserStatus::from_u8(status));

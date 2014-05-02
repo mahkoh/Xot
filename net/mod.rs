@@ -82,6 +82,7 @@ pub mod consts {
     pub static SYNC:                u8 = 17;
     pub static DATA:                u8 = 18;
     pub static CRYPTO:              u8 = 32;
+    pub static GROUP:               u8 = 48;
     pub static ONION_SEND_LEVEL0:   u8 = 128;
     pub static ONION_SEND_LEVEL1:   u8 = 129;
     pub static ONION_SEND_LEVEL2:   u8 = 130;
