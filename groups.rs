@@ -132,7 +132,7 @@ impl Group {
                 return other_error();
             }
         }
-        while data.remaining() > 0 {
+        while !data.eof() {
             let key:  Key        = try!(data.read_struct());
             let addr: SocketAddr = try!(data.read_struct());
             if self.close.iter().all(|c| self.public.cmp(c, addr) != Greater) {
@@ -142,10 +142,8 @@ impl Group {
                 continue;
             }
             self.send_getnodes(&addr, &key);
-            /* assoc add addr, id, timestamp */
         }
         self.add_close(&sender, addr);
-        /* assoc add sender, addr */
         Ok(())
     }
 
