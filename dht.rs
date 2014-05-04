@@ -278,10 +278,10 @@ impl DHT {
         return sent;
     }
 
-    fn random_path(&self) -> Option<[Node, ..3]> {
+    fn random_path(&self) -> Result<[Node, ..3], ()> {
         let nodes = Vec::with_capacity(3);
         if self.friends.len() == 0 {
-            return None;
+            return Err(());
         }
         let lan_ok = false;
         let MAX_TRIES = 6;
@@ -296,13 +296,13 @@ impl DHT {
             }
         }
         if nodes.len() != 3 {
-            return None;
+            return Err(())
         }
         let rv: [Node, ..3] = unsafe { mem::uninit() };
         for (i, v) in nodes.move_iter().enumerate() {
             rv[i] = v;
         }
-        Some(rv);
+        Ok(rv);
     }
 }
 

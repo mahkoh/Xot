@@ -15,7 +15,7 @@ use crypt::{PrecomputedKey, Key, Nonce, NONCE};
 use std::io::{MemWriter, MemReader, IoResult, standard_error, OtherIoError};
 use std::io::net::ip::{SocketAddr};
 use utils::{StructWriter, StructReader, CryptoWriter, FiniteReader, SlicableReader,
-            Writable};
+            Writable, other_error};
 use sockets::{UdpWriter};
 use keylocker::{Keylocker};
 
@@ -30,23 +30,17 @@ pub struct OnionNode {
     addr: SocketAddr,
 }
 
-/// The intemediate steps in an onion request.
-pub struct OnionPath {
-    nodes: [OnionNode, ..3],
-}
-
 /// The object running the onion layer.
-pub struct Onion<'a> {
-    sender: &'a mut UdpWriter,
-    locker: &'a mut Keylocker,
-    symmetric: &'a Key,
+pub struct Onion {
+    udp:       UdpWriter,
+    locker:    Keylocker,
+    symmetric: Key,
 }
 
-impl<'a, 'b> Onion<'a> {
-    pub fn send(&mut self, path: &OnionPath, dest: SocketAddr, data: &[u8]) {
+impl Onion {
+    fn send(&mut self, path: &OnionPath, dest: SocketAddr, data: &[u8]) {
         let _ = self.send_to_level_0(path, dest, data);
     }
-
 
     fn precomputed<'b>(&'b mut self, public: &Key) -> &'b PrecomputedKey {
         self.locker.get(public)
@@ -79,7 +73,7 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write_encrypted(&path.nodes[0].encoder.with_nonce(&nonce),
                                level_0.get_ref()));
 
-        self.sender.send_to(path.nodes[0].addr, packet.get_ref())
+        self.udp.send_to(path.nodes[0].addr, packet.get_ref())
     }
 
     fn handle_send_common(&mut self, data: &mut MemReader, pdw: uint, pk: bool)
@@ -87,6 +81,7 @@ impl<'a, 'b> Onion<'a> {
         let nonce: Nonce = try!(data.read_struct());
         let id: Key = try!(data.read_struct());
         let remaining = data.remaining();
+        // pdw = private data width
         if remaining < pdw {
             return other_error();
         }
@@ -121,7 +116,7 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write_encrypted(&self.symmetric.with_nonce(&my_nonce),
                                     source.encode().as_slice()))
 
-        self.sender.send_to(dest, packet.get_ref())
+        self.udp.send_to(dest, packet.get_ref())
     }
 
     pub fn handle_send_level_1(&mut self, source: SocketAddr,
@@ -143,7 +138,7 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write_encrypted(&self.symmetric.with_nonce(&my_nonce),
                                     private.get_ref()));
 
-        self.sender.send_to(dest, packet.get_ref())
+        self.udp.send_to(dest, packet.get_ref())
     }
 
     pub fn handle_send_level_2(&mut self, source: SocketAddr,
@@ -162,7 +157,7 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write_encrypted(&self.symmetric.with_nonce(&my_nonce),
                                     private.get_ref()));
 
-        self.sender.send_to(dest, packet.get_ref())
+        self.udp.send_to(dest, packet.get_ref())
     }
 
     pub fn respond(&mut self, dest: SocketAddr, data: &[u8],
@@ -172,7 +167,7 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write(path));
         try!(packet.write(data));
 
-        self.sender.send_to(dest, packet.get_ref())
+        self.udp.send_to(dest, packet.get_ref())
     }
 
     pub fn handle_recv_common(&self, data: &mut MemReader, pdw: uint)
@@ -197,7 +192,7 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write(decrypted.slice_to_end()));
         try!(packet.write(data.slice_to_end()));
 
-        self.sender.send_to(dest, packet.get_ref())
+        self.udp.send_to(dest, packet.get_ref())
     }
 
     pub fn handle_recv_level_1(&mut self, mut data: MemReader) -> IoResult<()> {
@@ -208,15 +203,11 @@ impl<'a, 'b> Onion<'a> {
         try!(packet.write(decrypted.slice_to_end()));
         try!(packet.write(data.slice_to_end()));
 
-        self.sender.send_to(dest, packet.get_ref())
+        self.udp.send_to(dest, packet.get_ref())
     }
 
     pub fn handle_recv_level_0(&mut self, mut data: MemReader) -> IoResult<()> {
         let (_, dest) = try!(self.handle_recv_common(&mut data, 64));
-        self.sender.send_to(dest, data.slice_to_end())
+        self.udp.send_to(dest, data.slice_to_end())
     }
-}
-
-fn other_error<T>() -> IoResult<T> {
-    Err(standard_error(OtherIoError))
 }
