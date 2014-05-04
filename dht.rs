@@ -37,6 +37,17 @@ impl DHT {
         self.udp.send_to(addr, packet.get_ref());
     }
 
+    fn get_close_nodes(&self, close_to: &Key, req_addr: SocketAddr,
+                       only_hard: bool) -> Vec<Node> {
+        let mut close_nodes = Vec::with_capacity(MAX_SENT_NODES);
+        self.close.get_close_nodes(close_to, req_addr, only_hard, &mut close_nodes);
+        for friend in self.friends.iter() {
+            // hardening is not implemented for friends
+            friend.clients.get_close_nodes(close_to, req_addr, false, &mut close_nodes);
+        }
+        close_nodes
+    }
+
     fn handle_get_nodes(&mut self, addr: SocketAddr,
                         mut data: MemReader) -> IoResult<()> {
         let their_key: Key = try!(data.read_struct());
@@ -232,6 +243,67 @@ impl DHT {
             client.assoc6.timestamp = time;
         }
     }
+
+    fn route_to_close(&self, to: &Key, packet: &[u8]) -> bool {
+        for client in self.close.iter() {
+            if client.id == to {
+                if client.assoc6.addr.valid() {
+                    self.udp.send_to(client.assoc6.addr, packet);
+                    return true;
+                } else if client.assoc4.addr.valid() {
+                    self.udp.send_to(client.assoc4.addr, packet);
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    fn route_to_friend(&self, to: &Key, packet: &[u8]) -> bool {
+        let friend = match self.friends.iter().find(|f| f.id == to) {
+            Some(f) => f,
+            None => return false,
+        };
+        let sent = false;
+        for client in friend.clients.iter() {
+            if client.assoc4.addr.valid() && !client.assoc4.is_bad() {
+                self.udp.send_to(client.assoc4.addr, packet);
+                sent = true;
+            } else if client.assoc6.addr.valid() && !client.assoc6.is_bad() {
+                self.udp.send_to(client.assoc6.addr, packet);
+                sent = true;
+            }
+        }
+        return sent;
+    }
+
+    fn random_path(&self) -> Option<[Node, ..3]> {
+        let nodes = Vec::with_capacity(3);
+        if self.friends.len() == 0 {
+            return None;
+        }
+        let lan_ok = false;
+        let MAX_TRIES = 6;
+        for _ in range(0, MAX_TRIES) {
+            let friend_num = task_rng().range(0, self.friends.len());
+            match self.friends[friend_num].clients.random_node(lan_ok) {
+                Some(n) => nodes.push(n),
+                None => continue,
+            }
+            if nodes.len() == 3 {
+                break;
+            }
+        }
+        if nodes.len() != 3 {
+            return None;
+        }
+        let rv: [Node, ..3] = unsafe { mem::uninit() };
+        for (i, v) in nodes.move_iter().enumerate() {
+            rv[i] = v;
+        }
+        Some(rv);
+    }
 }
 
 struct ClientList {
@@ -241,6 +313,106 @@ struct ClientList {
 }
 
 impl ClientList {
+    fn random_node(&self, lan_ok: bool) -> Option<Node> {
+        let possible = Vec::new();
+        for (i, client) in self.clients.enumerate() {
+            if !client.assoc4.is_bad() && (lan_ok || !client.assoc4.is_lan()) {
+                possible.push((i, IPv4));
+            }
+            if !client.assoc6.is_bad() && (lan_ok || !client.assoc6.is_lan()) {
+                possible.push((i, IPv6));
+            }
+        }
+        if possible.len() == 0 {
+            return None;
+        }
+        let val = task_rng().range(0, possible.len());
+        let (i, kind) = possible[val];
+        let id = self.clients[i].id.clone();
+        let addr = match kind {
+            IPv4 => self.clients[i].assoc4.addr,
+            IPv6 => self.clients[i].assoc6.addr,
+        };
+        Node { id: id, addr: addr }
+    }
+
+    fn replace_bad(&mut self, n: &Node) -> bool {
+        for client in self.clients.mut_iter() {
+            if client.assoc4.is_bad() && client.assoc6.is_bad() {
+                client.replace(n);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn replace_possibly_bad(&mut self, n: &Node, cmp_id: &Key) -> bool {
+        cmp_id.sort(&mut self.clients);
+        for client in self.clients.mut_iter().rev() {
+            if !client.assoc4.hardened() && !client.assoc6.hardened() {
+                client.replace(n);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn replace_good(&mut self, n: &Node, cmp_id: &Key) -> bool {
+        if self.clients.len() == 0 {
+            return false;
+        }
+        cmp_id.sort(&mut self.clients);
+        let last = self.clients.get_mut(self.clients.len()-1);
+        if cmp_id.cmp(&last.id, &n.id) == Less {
+            return false;
+        }
+        last.replace(n);
+        return true;
+    }
+
+    fn get_close_nodes(&self, close_to: &Key, req_addr: SocketAddr, only_hard: bool,
+                       nodes: &mut Vec<Node>) {
+        for cand in self.clients {
+            if nodes.contains(client.id) {
+                continue;
+            }
+            let addr = if cand.assoc4.timestamp > cand.assoc6.timestamp {
+                &cand.assoc4
+            } else {
+                &cand.assoc6
+            };
+            if addr.is_bad() {
+                continue;
+            }
+            if addr.is_lan() && !req_addr.is_lan() {
+                continue;
+            }
+            if !addr.is_lan() && only_hard && !addr.hardened() && cand.id != close_to {
+                continue;
+            }
+            if nodes.len() < MAX_SENT_NODES {
+                nodes.push(Node { id: cand.id.clone(), addr: addr });
+                if nodes.len() == MAX_SENT_NODES {
+                    close_to.sort(nodes);
+                }
+            } else {
+                if close_to.cmp(cand.id, &nodes.tail().id) == Greater {
+                    continue;
+                }
+                nodes.pop();
+                let n = nodes.len();
+                while (n > 0) {
+                    if close_to.cmp(cand.id, &nodes.get(n-1).id) == Greater {
+                        break;
+                    }
+                    n -= 1;
+                }
+                // This is O(MAX_SENT_NODES) but MAX_SENT_NODES is only 4.
+                nodes.insert(n, Node { id: cand.id.clone(), addr: addr });
+            }
+        }
+    }
+
     fn get_addr(&self, id: &Key) -> Option<SocketAddr> {
         for client in self.clients.iter() {
             if client.id == id {
@@ -300,6 +472,25 @@ struct Client {
     id: Key,
     assoc4: TimedSocketAddr,
     assoc6: TimedSocketAddr,
+}
+
+impl Client {
+    fn replace(&mut self, n: &Node) {
+        match n.ip.family() {
+            IPv4 => {
+                self.assoc4.addr = n.addr;
+                self.assoc4.timestamp = utils::time::sec();
+                self.assoc6.addr = TimedSocketAddr::zero();
+                self.id = n.id.clone();
+            },
+            IPv6 => {
+                self.assoc6.addr = n.addr;
+                self.assoc6.timestamp = utils::time::sec();
+                self.assoc4.addr = TimedSocketAddr::zero();
+                self.id = n.id.clone();
+            }
+        }
+    }
 }
 
 struct TimedSocketAddr {
