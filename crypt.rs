@@ -1,6 +1,7 @@
 //! Tools for encrypting, decrypting, and hashing messages.
 
-use libc::{c_uchar, c_int, c_ulonglong};
+use libc::{c_uchar, c_int, c_ulonglong, size_t, c_void};
+use libc::funcs::posix88::mman::{mlock, munlock};
 use rand;
 use rand::{Rng};
 use rand::os::{OSRng};
@@ -180,20 +181,6 @@ impl<'a> Key {
     }
 }
 
-impl Drop for Key {
-    fn drop(&mut self) {
-        let &Key(ref mut key) = self;
-        unsafe { volatile_set_memory(key as *mut u8, 0, KEY); }
-    }
-}
-
-impl Clone for Key {
-    fn clone(&self) -> Key {
-        let &Key(key) = self;
-        Key(key)
-    }
-}
-
 impl Writable for Key {
     fn write_to(&self, w: &mut Writer) -> IoResult<()> {
         let &Key(ref key) = self;
@@ -219,6 +206,38 @@ impl Eq for Key {
 
 impl TotalEq for Key { }
 
+/// Key that must not be swapped to disk and has to be securely erased.
+pub struct SecretKey {
+    key: ~[u8, ..KEY],
+}
+
+impl SecretKey {
+    /// Create a new `SecretKey` initialized to zero.
+    fn new() -> SecretKey {
+        let key = box() ([0u8, ..KEY]);
+        unsafe { assert_eq!(mlock(key.as_ptr() as *c_void, KEY as size_t), 0); }
+        SecretKey { key: key }
+    }
+}
+
+impl Drop for SecretKey {
+    fn drop(&mut self) {
+        unsafe {
+            volatile_set_memory(self.key.as_mut_ptr(), 0, KEY);
+            munlock(self.key.as_ptr() as *c_void, KEY as size_t);
+        }
+    }
+}
+
+impl Clone for SecretKey {
+    fn clone(&self) -> SecretKey {
+        let mut new_key = box() ([0u8, ..KEY]);
+        unsafe { assert_eq!(mlock(new_key.as_ptr() as *c_void, KEY as size_t), 0); }
+        *new_key = *self.key;
+        SecretKey { key: new_key }
+    }
+}
+
 /// Generate a new key for symmetric encryption.
 pub fn key() -> Key {
     let mut key: [u8, ..KEY] = unsafe { mem::uninit() };
@@ -230,11 +249,11 @@ pub fn key() -> Key {
 ///
 /// The first key is the private key.
 /// The second key is the public key.
-pub fn key_pair() -> (Key, Key) {
-    let mut secret: [u8, ..KEY] = unsafe { mem::uninit() };
+pub fn key_pair() -> (SecretKey, Key) {
+    let mut secret = SecretKey::new();
     let mut public: [u8, ..KEY] = unsafe { mem::uninit() };
-    unsafe { crypto_box_keypair(public.as_mut_ptr(), secret.as_mut_ptr()); }
-    (Key(secret), Key(public))
+    unsafe { crypto_box_keypair(public.as_mut_ptr(), secret.key.as_mut_ptr()); }
+    (secret, Key(public))
 }
 
 /// A nonce used for encryption.
@@ -282,7 +301,6 @@ impl Readable for Nonce {
 }
 
 /// An encoder used for public key encryption and decryption.
-#[deriving(Clone)]
 pub struct PrecomputedKey {
     key: Key,
 }
@@ -292,10 +310,10 @@ impl<'a> PrecomputedKey {
     ///
     /// The first key our secret key.
     /// The second key is the other party's public key.
-    pub fn new(&Key(ref secret): &Key, &Key(ref public): &Key) -> PrecomputedKey {
+    pub fn new(secret: &SecretKey, &Key(ref public): &Key) -> PrecomputedKey {
         unsafe {
             let mut key: [u8, ..KEY] = mem::uninit();
-            crypto_box_beforenm(key.as_mut_ptr(), public.as_ptr(), secret.as_ptr());
+            crypto_box_beforenm(key.as_mut_ptr(), public.as_ptr(), secret.key.as_ptr());
             PrecomputedKey {
                 key: Key(key)
             }
