@@ -160,3 +160,14 @@ pub fn parse_hex(s: &str, buf: &mut [u8]) -> Result<(),()> {
     }
     return Ok(());
 }
+
+pub trait LastN {
+    fn lastn(self, n: uint) -> Self;
+}
+
+impl<'a, T> LastN for &'a [T] {
+    fn lastn(self, n: uint) -> &'a [T] {
+        let len = self.len();
+        self.slice(len-n, len)
+    }
+}
