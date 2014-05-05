@@ -71,9 +71,9 @@ impl OnionPaths {
     }
 }
 
-struct OnionClient;
+struct Client;
 
-impl OnionClient {
+impl Client {
     fn send_friend_request(&self, id: &Key, nospam: [u8, ..4],
                            msg: &[u8]) -> IoResult<()> {
         let mut packet = MemWriter::new();
@@ -94,9 +94,33 @@ impl OnionClient {
         Ok(())
     }
 
-    fn send_announce_request(&self, path: ~OnionPath, dest: Node, public: &Key,
-                             private: &Key, ping_id: &[u8], client_id: &Key,
-                             data_public_key: &Key, send_back: &[u8]) -> IoResult<()> {
+    fn send_announce_request(&self, num: Option<u32>, dest: &Node, ping_id: &[u8],
+                             path_num: u32) -> IoResult<()> {
+        let zero_id = Key([0u8, ..32]);
+
+        // let send_back = 
+
+        match num {
+            None => {
+                let path = try!(self.my_paths.random_path());
+                Client::send_announce_request_inner(
+                    self.pipe, path, dest, &self.dht_public, &self.dht_private,
+                    ping_id, &self.dht_public, &self.tmp_public, send_back);
+            },
+            Some(num) => {
+                let friend = self.friends.get(num);
+                let path = try!(friend.paths.random_path());
+                Client::send_announce_request_inner(
+                    self.pipe, path, dest, &friend.tmp_public, &friend.tmp_private,
+                    ping_id, &friend.id, &zero_id, send_back);
+            }
+        }
+    }
+
+    fn send_announce_request_inner(pipe: PipeControl, path: ~OnionPath, dest: &Node,
+                                   public: &Key, private: &Key, ping_id: &[u8],
+                                   client_id: &Key, data_public_key: &Key,
+                                   send_back: &[u8]) -> IoResult<()> {
         let mut plain = MemWriter::new();
         try!(plain.write(ping_id));
         try!(plain.write(client_id));
@@ -113,7 +137,7 @@ impl OnionClient {
             try!(packet.write_encrypted(&machine, plain.get_ref()));
         }
 
-        self.send(path, dest.addr, packet.get_ref());
+        pipe.send(path, dest.addr, packet.get_ref());
     }
 
     fn handle_announce_request(&self, source: SocketAddr,
