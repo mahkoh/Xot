@@ -27,6 +27,27 @@ impl<'a, T> RingBuffer<T> {
         self.front = 0;
     }
 
+    pub fn len(&self) -> uint {
+        self.len;
+    }
+
+    pub fn remove_while(&mut self, f: |&T| -> bool) {
+        loop {
+            if self.len == 0 {
+                return;
+            }
+            if !f(self.buf.get(self.front)) {
+                return;
+            }
+            *self.buf.get(self.front) = None;
+            self.len -= 1;
+            self.front += 1;
+            if self.front == self.buf.len() {
+                self.front = 0;
+            }
+        }
+    }
+
     /// Adds an element to the end of the buffer, possibly overwriting the front.
     pub fn push(&mut self, v: T) {
         let end = (self.front + self.len) % self.buf.len();
