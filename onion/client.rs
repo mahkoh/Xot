@@ -89,20 +89,47 @@ struct Node {
 }
 
 struct Friend {
-    nodes: Vec<Node>,
-    real_id: Key,
-    id: Option<uint>,
-    tmp_public: Key,
-    tmp_private: SecretKey,
-    paths: OnionPaths,
+    is_online:      bool,
+    nodes:          Vec<Node>,
+    real_id:        Key,
+    id:             Option<uint>,
+    fake_id:        Option<Key>,
+    tmp_public:     Key,
+    tmp_private:    SecretKey,
+    paths:          OnionPaths,
+    last_no_replay: u64,
+    last_seen:      u64,
 }
 
 impl Friend {
-    fn send_announce_request(&mut self, dest: &Node, ping_id: Option<&[u8, ..PING_ID]>,
-                             path_num: Option<u32>, pipe: &PipeControl,
-                             symmetric: &Key, data_public: &Key) -> IoResult<()> {
+    fn set_online(&mut self, online: bool) {
+        if self.is_online && !online {
+            self.last_seen = utils::time::sec();
+        }
+        self.is_online = online;
+        if !online {
+            self.last_no_replay = utils::time::sec();
+        }
+    }
+
+    fn is_kill(&self) -> bool {
+        self.last_seen + DEAD_ONION_TIMEOUT < utils::time::sec()
+    }
+
+    fn send_announce_request(&mut self, dest: Choice<&Node, uint>,
+                             ping_id: Option<&[u8, ..PING_ID]>, path_num: Option<u32>,
+                             pipe: &PipeControl, symmetric: &Key,
+                             data_public: &Key) -> IoResult<()> {
         // Let's do this first because all those other try!s probably won't fail.
         let path = try!(self.paths.random_path());
+
+        let (dest_addr, dest_id) = match dest {
+            One(d) => (d.addr, &d.id),
+            Two(i) => {
+                let node = &self.nodes[i];
+                (node.addr, &node.real_id)
+            },
+        };
 
         let send_back = {
             let nonce = Nonce::random();
@@ -113,8 +140,8 @@ impl Friend {
                 None    => try!(private.write_be_u32(0)),
             };
             try!(private.write_be_u64(utils::time::sec()));
-            try!(private.write_struct(&dest.id));
-            try!(private.write_struct(&dest.addr));
+            try!(private.write_struct(&dest_id));
+            try!(private.write_struct(&dest_addr));
 
             let send_back = MemWriter::new();
             try!(send_back.write_struct(&nonce));
@@ -127,10 +154,9 @@ impl Friend {
             let mut plain = MemWriter::new();
             match ping_id {
                 Some(p) => try!(plain.write(p)),
-                None => try!(plain.write([0u8, ..32])),
+                None => try!(plain.write([0u8, ..PING_ID])),
             }
-            // this is wrong. What is self.id supposed to be?
-            try!(plain.write(self.id));
+            try!(plain.write(self.real_id));
             match self.id.is_none() {
                 true  => try!(plain.write_struct(data_public)),
                 false => try!(plain.write([0u8, ..KEY])),
@@ -147,13 +173,13 @@ impl Friend {
             try!(packet.write_struct(self.tmp_public));
             {
                 let machine =
-                    PrecomputedKey::new(self.tmp_private, dest.id).with_nonce(&nonce);
+                    PrecomputedKey::new(self.tmp_private, dest_id).with_nonce(&nonce);
                 try!(packet.write_encrypted(&machine, plain.get_ref()));
             }
             packet.unwrap()
         };
 
-        pipe.send(path, dest.addr, packet.get_ref());
+        pipe.send(path, dest_addr, packet.get_ref());
 
         self.last_pinged.push(Ping { id: node.id, timestamp: utils::time::sec() });
         self.ping_nodes_second += 1;
@@ -201,15 +227,168 @@ impl Friend {
             try!(packet.write_struct(&rand_pub));
             try!(packet.write_encrypted(&machine, encrypted));
 
-            self.send(path, node.addr, packet.unwrap());
+            self.pipe.send(path, node.addr, packet.unwrap());
         }
+        Ok(())
+    }
+
+    fn do_myself(&mut self, dht: &DHTControl, symmetric: &Key, data_key: &Key,
+                 pipe: &PipeControl) {
+        let count = 0u;
+        for i in range(0, self.nodes.len()) {
+            if self.nodes[i].timed_out() {
+                continue;
+            }
+            count += 1;
+            if self.nodes[i].last_pinged == 0 {
+                self.nodes[i].last_pinged = 1;
+                continue;
+            }
+            let interval = match self.nodes[i].data_key {
+                Some(_) => ANNOUNCE_INTERVAL_NOT_ANNOUNCED,
+                None    => ANNOUNCE_INTERVAL_ANNOUNCED,
+            };
+            if self.nodes[i].last_pinged + interval > utils::time::sec() {
+                let path_id = None;
+                self.send_announce_request(Two(i), path_id, pipe, symmetric,
+                                           data_public);
+            }
+        }
+        if count <= task_rng().range(0, MAX_ONION_CLIENTS) {
+            let is_lan = 1;
+            let want_good = false;
+            let kind = task_rng().choose([AF_INET, AF_INET6]);
+            let nodes = dht.get_close(self.crypto_public, kind, is_lan, want_good);
+            for node in nodes.iter() {
+                let ping_id = None;
+                let path_num = None;
+                self.send_announce_request(One(node), ping_id, path_num, pipe, symmetric,
+                                           data_public);
+            }
+        }
+    }
+
+    fn do_friend(&mut self, dht: &DHTControl, symmetric: &Key, pipe: &PipeControl) {
+        if self.is_online {
+            return;
+        }
+        let count = 0u;
+        for i in range(0, self.nodes.len()) {
+            if self.nodes[i].timed_out() {
+                continue;
+            }
+            count += 1;
+            if self.nodes[i].should_ping() {
+                let path_id = None;
+                self.send_announce_request(Two(i), path_id, pipe, symmetric,
+                                           &self.id);
+                self.nodes[i].last_pinged = utils::time::sec();
+            }
+        }
+        if count != MAX_ONION_CLIENTS && count < task_rng().range(0, MAX_ONION_CLIENTS) {
+            let is_lan = 1;
+            let want_good = false;
+            let kind = task_rng().choose([AF_INET, AF_INET6]);
+            let nodes = dht.get_close(self.crypto_public, kind, is_lan, want_good);
+            for node in nodes.iter() {
+                let ping_id = None;
+                let path_num = None;
+                self.send_announce_request(One(node), ping_id, path_num, pipe, symmetric,
+                                           &self.id);
+            }
+        }
+        if self.should_send_onion_fake_id() {
+            let dht_instead_of_onion = false;
+            self.send_fake_id(dht_instead_of_onion);
+        }
+        if self.should_send_dht_fake_id() {
+            let dht_instead_of_onion = true;
+            self.send_fake_id(dht_instead_of_onion);
+        }
+    }
+
+    fn should_send_onion_fake_id(&self) -> bool {
+        self.last_onion_fake_id + ONION_FAKE_ID_INTERVAL < utils::time::sec()
+    }
+
+    fn should_send_dht_fake_id(&self) -> bool {
+        self.last_dht_fake_id + DHT_FAKE_ID_INTERVAL < utils::time::sec()
+    }
+
+    fn send_fake_id(&self, dht_instead_of_onion: bool) -> IoResult<()> {
+        let packet = {
+            let close_nodes = self.dht.close_nodes();
+            let mut packet = MemWriter::new();
+            try!(packet.write_u8(FAKE_ID));
+            try!(packet.write_be_u64(utils::time::sec()));
+            try!(packet.write_struct(dht_pub));
+            try!(packet.write_struct(close_nodes));
+            packet.unwrap()
+        };
+        if dht_instead_of_onion {
+            self.send_dht_fake_id(packet, cypto_public, crypto_private, dht)
+        } else {
+            self.send_onion_data(packet, cypto_public, crypto_private, dht)
+        }
+    }
+
+    fn send_dht_fake_id(&self, public: &Key, private: &SecretKey,
+                        data: &[u8]) -> IoResult<()> {
+        let encrypted = {
+            let nonce = Nonce::random();
+            let mut encrypted = MemWriter::new();
+            try!(encrypted.write_struct(public));
+            try!(encrypted.write_struct(&nonce));
+            let machine = PrecomputedKey::new(private, &self.real_id).with_nonce(&nonce);
+            try!(encrypted.write_encrypted(&nonce, data));
+            encrypted.unwrap()
+        };
+
+        let packet = {
+            let nonce = Nonce::random();
+            let mut tmp = MemWriter::new();
+            try!(tmp.write_u8(FAKE_ID));
+            try!(tmy.write(encrypted));
+
+            let machine = PrecomputedKey::New(dht_priv, &self.real_id).with_nonce(&nonce);
+            let mut packet = MemWriter::new();
+            try!(packet.write_u8(PACKET_CRYPTO));
+            try!(packet.write_struct(&self.fake_id.unwrap()));
+            try!(packet.write_struct(dht_pub));
+            try!(packet.write_struct(&nonce));
+            try!(packet.write_encrypted(&nonce, tmp.get_ref()));
+            packet.unwrap()
+        };
+
+        self.dht.route_to_friend(self.fake_id.unwrap(), packet);
         Ok(())
     }
 }
 
-struct Client;
+struct Client {
+    friends:     Vec<Friend>,
+    tmp_public:  Key,
+    tmp_private: SecretKey,
+    symmetric:   SecretKey,
+}
 
 impl Client {
+    // at most once per second
+    fn do_client(&mut self) {
+        self.myself.do_myself();
+        self.do_friends();
+    }
+
+    fn do_friends(&mut self) {
+        for friend in self.friends.iter() {
+            friend.do_friend(&self.dht, &self.symmetric, &self.pipe);
+            if friend.fake_id.is_some() && !friend.is_online && friend.is_kill() {
+                self.dht.del_friend(friend.fake_id.as_ref().unwrap());
+                friend.fake_id = None;
+            }
+        }
+    }
+
     fn send_friend_request(&self, id: &Key, nospam: [u8, ..4],
                            msg: &[u8]) -> IoResult<()> {
         let mut packet = MemWriter::new();
@@ -230,141 +409,9 @@ impl Client {
         Ok(())
     }
 
-    fn handle_announce_request(&self, source: SocketAddr,
-                               mut data: MemReader) -> IoResult<()> {
-        let (our_key, public, return_path, ping_id, clint_id, data_public, send_back) = {
-            let PRIVATE_DATA_LEN = 192;
-            let nonce: Nonce = try!(data.read_struct());
-            let their_key: Key = try!(data.read_struct());
-            let our_key = self.precomputed(&their_key).clone();
-            let mut plain = {
-                if data.remaining() < PRIVATE_DATA_LEN {
-                    return other_error();
-                }
-                let data = BufReader::new(data.slice_to_end().initn(PRIVATE_DATA_LEN));
-                let plain = try!(data.read_encrypted(&our_key.with_nonce(&nonce)));
-                MemReader::new(plain)
-            };
-            let return_path = data.slice_to_end().lastn(PRIVATE_DATA_LEN);
-            let ping_id = try!(plain.read_exact(32));
-            let client_id: Key = try!(plain.read_struct());
-            let data_public: Key = try!(plain.read_struct());
-            // This is a bit of a waste since we only need a slice but plain is out of
-            // scope once we leave this block. Given that send_back will soon be very
-            // small, I guess this is ok. Maybe, once the size of send_back is fixed, we
-            // can turn this into a stack allocation.
-            let send_back = plain.slice_to_end().to_owned();
-            (our_key, their_key, return_path, ping_id, client_id, data_public, send_back)
-        };
-
-        let (ping1, ping2) = {
-            let time = utils::time::sec();
-            let ping1 = self.generate_ping_id(time                  , &public, source);
-            let ping2 = self.generate_ping_id(time + PING_ID_TIMEOUT, &public, source);
-            (ping1, ping2)
-        };
-
-        let index = if ping1 == ping_id || ping2 == ping_id {
-            /////
-            // Add a new entry if possible or update the old one.
-            /////
-            let pos = match self.entries.len() {
-                MAX_ENTRIES => {
-                    match self.in_entries(&public) {
-                        Some(p) => Some(p),
-                        None => {
-                            match self.entries.iter().position(|e| e.timed_out()) {
-                                Some(p) => Some(p),
-                                None => {
-                                    match self.dht_pub.cmp(&self.entries[0].id, &public) {
-                                        Greater => Some(0),
-                                        _ => None,
-                                    }
-                                },
-                            }
-                        },
-                    }
-                },
-                _ => {
-                    self.entries.push(Entry::new());
-                    Soem(self.entries.len()-1)
-                },
-            };
-            match pos {
-                Some(p) => {
-                    {
-                        let e = &self.entries[p];
-                        e.public = *public;
-                        e.ret_addr = source;
-                        e.ret = return_path.to_owned();
-                        e.data_public = data_public;
-                        e.time = utils::time::sec();
-                    }
-                    self.entries.sort_by(|e1, e2| {
-                        match (e1.timed_out(), e2.timed_out()) {
-                            (true,  true)  => Equal,
-                            (false, true)  => Greater,
-                            (true,  false) => Less,
-                            // real_id.cmp returs better < worse, so we interchange the
-                            // arguments.
-                            (false, false) => self.dht_pub.cmp(&e2.id, &e1.id),
-                        }
-                    });
-                },
-                None => { }
-            }
-            pos
-        } else {
-            self.in_entries(client_id)
-        };
-
-        let encrypted = {
-            let only_good = true;
-            let nodes = self.dht.get_close(client_id, source, only_good);
-
-            let mut encrypted = MemWriter::new();
-            if index == -1 {
-                try!(encrypted.write_u8(0));
-                try!(encrypted.write(ping2));
-            } else {
-                let entry = &self.entries[index];
-                if entry.public == public && entry.data_public == data_public {
-                    try!(encrypted.write_u8(0));
-                    try!(encrypted.write(ping2));
-                } else {
-                    try!(encrypted.write_u8(1));
-                    try!(encrypted.write(entry.data_public));
-                }
-            }
-            try!(encrypted.write_struct(nodes));
-            encrypted.unwrap()
-        };
-
-        let packet = {
-            let nonce = Nonce::random();
-            let mut packet = MemWriter::new();
-            try!(packet.write_u8(ANNOUNCE_RESPONSE));
-            try!(packet.write(send_back));
-            try!(packet.write_struct(&nonce));
-            try!(packet.write_encrypted(&our_key.with_nonce(&nonce)));
-            packet.unwrap()
-        };
-
-        self.pipe.send_response(source, packet, return_path);
-        Ok(())
-    }
 
     fn handle_data_request(&self, source: SocketAddr,
                            mut data: MemReader) -> IoResult<()> {
-    }
-
-    fn generate_ping_id(&self, time: u64, public: &Key, addr: SocketAddr) -> [u8, ..32] {
-        let mut data = MemWriter::new();
-        let _ = data.write(self.secret_bytes);
-        let _ = data.write_be_u64(time / PING_ID_TIMEOUT);
-        let _ = data.write_struct(public);
-        let _ = data.write_struct(addr);
-        crypt::hash(time.get_ref())
     }
 
     fn handle_announce_response(&self, source: SocketAddr,
@@ -424,7 +471,7 @@ impl Client {
         let friend = match num {
             Some(n) => try!(self.get_friend(n)),
             None => {
-                if is_data_key && self.myself.tmp_public != ping_id_or_data_key {
+                if is_data_key && self.myself.data_key != ping_id_or_data_key {
                     is_data_key = false;
                 }
                 &mut self.myself
@@ -527,38 +574,66 @@ impl Client {
         Ok(())
     }
 
-    fn do_annonnce(&mut self) {
-        let count = 0u;
-        for node in self.myself.nodes.mut_iter() {
-            if node.timed_out() {
-                continue;
-            }
-            count += 1;
-            if node.last_pinged == 0 {
-                node.last_pinged = 1;
-                continue;
-            }
-            let interval = match self.data_key {
-                Some(_) => ANNOUNCE_INTERVAL_NOT_ANNOUNCED,
-                None => ANNOUNCE_INTERVAL_ANNOUNCED,
-            };
-            if node.last_pinged + interval >= utils::time::sec() {
-                let path_id = None;
-                // Obviously this doesn't work because myself is already borrowed mutably.
-                self.myself.send_announce_request(node.ip_port, node.ping_id, path_id,
-                                                  &self.pipe, &self.symmetric,
-                                                  &self.data_public);
+
+    fn handle_forwarded(&self, source: SocketAddr, mut data: MemReader) -> IoResult<()> {
+        let nonce: Nonce = try!(data.read_struct());
+
+        let encrypted = {
+            let key: Key = try!(data.read_struct());
+            let machine = Precomputed::new(&self.tmp_private, &key).with_nonce(&nonce);
+            MemReader::new(try!(data.read_encrypted(&machine)))
+        };
+        let key: Key = try!(encrypted.read_struct());
+
+        let encrypted = {
+            let machine = Precomputed::new(&self.crypto_private, &key).with_nonce(&nonce);
+            MemReader::new(try!(encrypted.read_encrypted(&machine)))
+        };
+        match try!(encypted.read_u8()) {
+            FAKE_ID => self.handle_fake_id(&key, encrypted),
+            FRIEND_REQUEST => { /* ... */ },
+        }
+    }
+
+    fn handle_dht_fake_id(&self, source: &Key, mut data: MemReader) -> IoResult<()> {
+        let key: Key = try!(data.read_struct());
+        let mut data = {
+            let nonce: Nonce = try!(data.read_struct());
+            let machine = PrecomputedKey::new(&self.crypto_key, &key).with_nonce(&nonce);
+            let data = try!(data.read_encrypted(&machine));
+            MemReader::new(data)
+        };
+        if key != *source {
+            return other_error();
+        }
+        self.handle_fake_id(&key, data)
+    }
+
+    fn handle_fake_id(&self, id: &Key, mut data: MemReader) -> IoResult<()> {
+        let friend = match self.find_friend(id) {
+            Some(f) => f,
+            None => return other_error(),
+        };
+        {
+            let no_replay = try!(data.read_be_u64(data));
+            match no_replay <= friend.last_no_replay {
+                true => return other_error(),
+                false => friend.last_no_replay = no_replay,
             }
         }
-        if count != MAX_ONION_CLIENTS && count < task_rng().range(0, MAX_ONION_CLIENTS) {
-            let is_lan = 1;
-            let want_good = false;
-            let nodes
-                = self.dht.get_close(self.crypto_public, AF_INET, is_lan, want_good);
-            for node in nodes {
-                self.myself.send_annonce_request(&node, None, None, &self.pipe,
-                                                 &self.symmetric, &self.data_public);
+        {
+            let fake_id: Key = try!(data.read_struct());
+            match friend.fake_id {
+                Some(id) => if fake_id != id {
+                    self.dht.refresh_friend(&id, &fake_id);
+                    friend.last_seen = utils::time::sec();
+                },
+                None => self.dht.add_friend(&fake_id),
             }
+            friend.fake_id = Some(fake_id);
         }
+        let nodes: Vec<Node> = try!(data.read_struct());
+        self.dht.get_all_nodes(nodes, friend.fake_id.unwrap());
+        Ok(())
     }
 }

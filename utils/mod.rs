@@ -171,3 +171,8 @@ impl<'a, T> LastN for &'a [T] {
         self.slice(len-n, len)
     }
 }
+
+pub enum Choice<T,U> {
+    One(T),
+    Two(U),
+}

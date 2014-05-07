@@ -30,14 +30,172 @@ pub struct OnionNode {
     addr: SocketAddr,
 }
 
+struct Contact {
+    id: Key,
+    ret_addr: SocketAddr,
+    ret: Vec<u8>,
+}
+
 /// The object running the onion layer.
 pub struct Onion {
     udp:       UdpWriter,
     locker:    Keylocker,
     symmetric: Key,
+    contacts:  Vec<Contact>,
+    secret_bytes: [u8, ..32],
 }
 
 impl Onion {
+    fn handle_forward_request(&self, source: SocketAddr,
+                              mut data: MemReader) -> IoResult<()> {
+        let contact = {
+            let dest: Key = try!(data.read_struct());
+            try!(self.find_contact(&dest))
+        };
+        if data.remaining() < 192 {
+            return other_error();
+        }
+        let packet = {
+            let mut packet = MemWriter::new();
+            try!(packet.write_u8(ONION_FORWARDED));
+            try!(packet.write(data.slice_to_end().initn(192)));
+            packet.unwrap()
+        };
+        self.respond(contact.ret_addr, packet, &contact.ret)
+    }
+
+    fn generate_ping_id(&self, time: u64, public: &Key, addr: SocketAddr) -> [u8, ..32] {
+        let mut data = MemWriter::new();
+        let _ = data.write(self.secret_bytes);
+        let _ = data.write_be_u64(time / PING_ID_TIMEOUT);
+        let _ = data.write_struct(public);
+        let _ = data.write_struct(addr);
+        crypt::hash(time.get_ref())
+    }
+
+    fn handle_contact_announce(&self, source: SocketAddr,
+                               mut data: MemReader) -> IoResult<()> {
+        let (our_key, id, return_path, ping_id, real_id, data_key, send_back) = {
+            let PRIVATE_DATA_LEN = 192;
+            let nonce: Nonce = try!(data.read_struct());
+            let their_key: Key = try!(data.read_struct());
+            let our_key = self.precomputed(&their_key).clone();
+            let mut plain = {
+                if data.remaining() < PRIVATE_DATA_LEN {
+                    return other_error();
+                }
+                let data = BufReader::new(data.slice_to_end().initn(PRIVATE_DATA_LEN));
+                let plain = try!(data.read_encrypted(&our_key.with_nonce(&nonce)));
+                MemReader::new(plain)
+            };
+            let return_path = data.slice_to_end().lastn(PRIVATE_DATA_LEN);
+            let ping_id = try!(plain.read_exact(32));
+            let real_id: Key = try!(plain.read_struct());
+            let data_key: Key = try!(plain.read_struct());
+            // This is a bit of a waste since we only need a slice but plain is out of
+            // scope once we leave this block. Given that send_back will soon be very
+            // small, I guess this is ok. Maybe, once the size of send_back is fixed, we
+            // can turn this into a stack allocation.
+            let send_back = plain.slice_to_end().to_owned();
+            (our_key, their_key, return_path, ping_id, real_id, data_key, send_back)
+        };
+
+        let (ping1, ping2) = {
+            let time = utils::time::sec();
+            let ping1 = self.generate_ping_id(time                  , &id, source);
+            let ping2 = self.generate_ping_id(time + PING_ID_TIMEOUT, &id, source);
+            (ping1, ping2)
+        };
+
+        let index = if ping1 == ping_id || ping2 == ping_id {
+            /////
+            // Add a new contact if possible or update the old one.
+            /////
+            let pos = match self.contacts.len() {
+                MAX_CONTACTS => {
+                    match self.find_contact(&id) {
+                        Some(p) => Some(p),
+                        None => {
+                            match self.contacts.iter().position(|e| e.timed_out()) {
+                                Some(p) => Some(p),
+                                None => {
+                                    match self.dht_pub.cmp(&self.contacts[0].id, &id) {
+                                        Greater => Some(0),
+                                        _ => None,
+                                    }
+                                },
+                            }
+                        },
+                    }
+                },
+                _ => {
+                    self.contacts.push(Contact::new());
+                    Soem(self.contacts.len()-1)
+                },
+            };
+            match pos {
+                Some(p) => {
+                    {
+                        let c = &self.contacts[p];
+                        c.id       = id;
+                        c.ret_addr = source;
+                        c.ret      = return_path.to_owned();
+                        c.data_key = data_key;
+                        c.time     = utils::time::sec();
+                    }
+                    self.contact.sort_by(|e1, e2| {
+                        match (e1.timed_out(), e2.timed_out()) {
+                            (true,  true)  => Equal,
+                            (false, true)  => Greater,
+                            (true,  false) => Less,
+                            // dht_pub.cmp returs better < worse, so we interchange the
+                            // arguments.
+                            (false, false) => self.dht_pub.cmp(&e2.id, &e1.id),
+                        }
+                    });
+                },
+                None => { }
+            }
+            pos
+        } else {
+            self.find_contact(real_id)
+        };
+
+        let encrypted = {
+            let only_good = true;
+            let nodes = self.dht.get_close(real_id, source, only_good);
+
+            let mut encrypted = MemWriter::new();
+            let (is_data_key, val) = match index {
+                None => (0, ping2),
+                Some(i) => {
+                    let entry = &self.entries[index];
+                    match entry.id == id && entry.data_key == data_key {
+                        true  => (0, ping2),
+                        false => (1, entry.data_key.as_slice()),
+                    }
+                },
+            };
+            try!(encrypted.write_u8(is_data_key));
+            try!(encrypted.write(val));
+            try!(encrypted.write_struct(nodes));
+            encrypted.unwrap()
+        };
+
+        let packet = {
+            let nonce = Nonce::random();
+            let mut packet = MemWriter::new();
+            try!(packet.write_u8(ANNOUNCE_RESPONSE));
+            try!(packet.write(send_back));
+            try!(packet.write_struct(&nonce));
+            try!(packet.write_encrypted(&our_key.with_nonce(&nonce)));
+            packet.unwrap()
+        };
+
+        self.pipe.send_response(source, packet, return_path);
+        Ok(())
+    }
+
     fn send(&mut self, path: &OnionPath, dest: SocketAddr, data: &[u8]) {
         let _ = self.send_to_level_0(path, dest, data);
     }
