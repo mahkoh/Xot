@@ -603,9 +603,12 @@ impl Client {
             let data = try!(data.read_encrypted(&machine));
             MemReader::new(data)
         };
+        /* See
+         * https://github.com/irungentoo/ProjectTox-Core/commit/9fccb80eec
         if key != *source {
             return other_error();
         }
+        */
         self.handle_fake_id(&key, data)
     }
 

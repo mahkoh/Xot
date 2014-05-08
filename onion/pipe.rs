@@ -113,20 +113,14 @@ impl Onion {
             /////
             let pos = match self.contacts.len() {
                 MAX_CONTACTS => {
-                    match self.find_contact(&id) {
-                        Some(p) => Some(p),
-                        None => {
-                            match self.contacts.iter().position(|e| e.timed_out()) {
-                                Some(p) => Some(p),
-                                None => {
-                                    match self.dht_pub.cmp(&self.contacts[0].id, &id) {
-                                        Greater => Some(0),
-                                        _ => None,
-                                    }
-                                },
+                    self.contacts.iter().position(|e| e.id == id).or_else(|| {
+                        self.contacts.iter().position(|e| e.timed_out()).or_else(|| {
+                            match self.dht_pub.cmp(&self.contacts.get(0).id, &id) {
+                                Greater => Some(0),
+                                _       => None,
                             }
-                        },
-                    }
+                        })
+                    })
                 },
                 _ => {
                     self.contacts.push(Contact::new());
