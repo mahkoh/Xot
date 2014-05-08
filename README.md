@@ -8,4 +8,5 @@ A modified MIT License with this additional paragraph:
 >their changes available under this license.
 
 This prevents forks from restricting the users' freedoms by putting their code
-under a non-permissive license.
+under a non-permissive license. Note that this paragraph only applies to open
+source distributions.
