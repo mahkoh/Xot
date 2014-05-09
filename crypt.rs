@@ -80,7 +80,7 @@ impl<'a> Machine<'a> {
 
     /// Encrypts data.
     pub fn encrypt(&self, data: &[u8]) -> Vec<u8> {
-        let mut w = MemWriter::new();
+        let mut w = MemWriter::with_capacity(data.len() + BOXZERO);
         let _ = self.encrypt_to(data, &mut w);
         w.unwrap()
     }
