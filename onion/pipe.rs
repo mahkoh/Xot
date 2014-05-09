@@ -13,18 +13,21 @@
 
 use crypt;
 use crypt::{PrecomputedKey, Key, Nonce, NONCE};
-use std::io::{MemWriter, MemReader, BufReader, IoResult, standard_error, OtherIoError};
+use std::io::{MemWriter, MemReader, IoResult, standard_error, OtherIoError};
 use std::io::net::ip::{SocketAddr};
 use std::{mem};
 use utils;
 use utils::{StructWriter, StructReader, CryptoWriter, FiniteReader, SlicableReader,
-            Writable, other_error};
+            Writable, other_error, CryptoReader, LastN};
+use utils::bufreader::{BufReader};
+use net::{IpAddrInfo};
 use net::sockets::{UdpWriter};
 use keylocker::{Keylocker};
 use onion::consts::{LEVEL0_RESPONSE, LEVEL1_RESPONSE, LEVEL2_RESPONSE,
                     LEVEL0_SEND, LEVEL1_SEND, LEVEL2_SEND, ONION_FORWARDED,
                     META_RESPONSE};
 use onion::client::{OnionPath};
+use dht::{DHTControl};
 
 /// Size of return data stored by Level 0. 
 static LEVEL0_PRIVATE: uint = 64u;
@@ -34,6 +37,7 @@ static LEVEL1_PRIVATE: uint = 2u * LEVEL0_PRIVATE;
 static LEVEL2_PRIVATE: uint = 3u * LEVEL0_PRIVATE;
 /// TODO
 static PING_ID_TIMEOUT: u64 = 20;
+static CONTACT_TIMEOUT: u64 = 300;
 
 /// Client to whom we have an onion path.
 struct Contact {
@@ -52,6 +56,10 @@ impl Contact {
         // Maybe use uninit?
         unsafe { mem::init() }
     }
+
+    fn timed_out(&self) -> bool {
+        self.timestamp + CONTACT_TIMEOUT < utils::time::sec()
+    }
 }
 
 /// The object running the onion layer.
@@ -61,6 +69,8 @@ pub struct Onion {
     symmetric: Key,
     contacts:  Vec<Contact>,
     secret_bytes: [u8, ..32],
+    dht_pub:   Key,
+    dht: DHTControl,
 }
 
 impl Onion {
@@ -79,12 +89,12 @@ impl Onion {
         let packet = {
             let mut packet = MemWriter::new();
             try!(packet.write_u8(LEVEL2_RESPONSE));
-            try!(packet.write(contact.private));
+            try!(packet.write(contact.private.as_slice()));
             try!(packet.write_u8(ONION_FORWARDED));
             try!(packet.write(data.slice_to_end().initn(LEVEL2_PRIVATE)));
             packet.unwrap()
         };
-        self.udp.send_to(contact.addr, packet)
+        self.udp.send_to(contact.addr, packet.as_slice())
     }
 
     /// TODO
@@ -94,8 +104,8 @@ impl Onion {
         try!(data.write(self.secret_bytes));
         try!(data.write_be_u64(time / PING_ID_TIMEOUT));
         try!(data.write_struct(key));
-        try!(data.write_struct(addr));
-        crypt::hash(data.get_ref())
+        try!(data.write_struct(&addr));
+        Ok(crypt::hash(data.get_ref()))
     }
 
     fn precomputed<'a>(&'a mut self, key: &Key) -> &'a PrecomputedKey {
@@ -138,12 +148,12 @@ impl Onion {
 
         let (ping1, ping2) = {
             let time = utils::time::sec();
-            let ping1 = self.generate_ping_id(time                  , &id, source);
-            let ping2 = self.generate_ping_id(time + PING_ID_TIMEOUT, &id, source);
+            let ping1 = try!(self.generate_ping_id(time                  , &id, source));
+            let ping2 = try!(self.generate_ping_id(time + PING_ID_TIMEOUT, &id, source));
             (ping1, ping2)
         };
 
-        let index = if ping1 == ping_id || ping2 == ping_id {
+        let index = if ping1 == ping_id.as_slice() || ping2 == ping_id.as_slice() {
             // This branch is case 1
             // First we check if the node is already in the contacts or if we have space
             // to add a new one.
@@ -171,7 +181,7 @@ impl Onion {
                         let c = self.contacts.get(p);
                         c.id        = id;
                         c.addr      = source;
-                        c.private   = return_path.to_owned();
+                        c.private   = Vec::from_slice(return_path);
                         c.data_key  = data_key;
                         c.timestamp = utils::time::sec();
                     }
@@ -200,16 +210,19 @@ impl Onion {
         };
 
         let encrypted = {
-            let only_good = true;
             // For good measure we also send some dht nodes back.
-            let nodes = self.dht.get_close(requested_id, source, only_good);
+            let nodes = {
+                let lan_ok = source.ip.is_lan();
+                let only_good = true;
+                self.dht.get_close_nodes(&requested_id, lan_ok, only_good)
+            };
 
             let mut encrypted = MemWriter::new();
             // If `index` is None, then we're either in case 1 or we haven't found the
             // requested id.
             let (is_data_key, val) = match index {
-                None    => (0, ping2),
-                Some(i) => (1, self.contacts.get(i).data_key.as_slice()),
+                None    => (0, ping2.as_slice()),
+                Some(i) => (1, self.contacts.get(i).data_key.raw().as_slice()),
             };
             try!(encrypted.write_u8(is_data_key));
             try!(encrypted.write(val));
@@ -225,11 +238,12 @@ impl Onion {
             try!(packet.write_u8(META_RESPONSE));
             try!(packet.write(send_back));
             try!(packet.write_struct(&nonce));
-            try!(packet.write_encrypted(&our_key.with_nonce(&nonce)));
+            try!(packet.write_encrypted(&our_key.with_nonce(&nonce),
+                                        encrypted.as_slice()));
             packet.unwrap()
         };
 
-        self.udp.send_to(source, packet.get_ref());
+        self.udp.send_to(source, packet.as_slice());
         Ok(())
     }
 
@@ -272,11 +286,11 @@ impl Onion {
             try!(packet.write_struct(&nonce));
             try!(packet.write_struct(&path.nodes[0].public));
             try!(packet.write_encrypted(&path.nodes[0].encoder.with_nonce(&nonce),
-                                        level0.get_ref()));
+                                        level0.as_slice()));
             packet.unwrap()
         };
 
-        self.udp.send_to(path.nodes[0].addr, packet);
+        self.udp.send_to(path.nodes[0].addr, packet.as_slice());
         Ok(())
     }
 
@@ -309,6 +323,7 @@ impl Onion {
         let (decrypted, dest, pk2, nonce) = {
             let get_public_key = true;
             let private_data_size = 0;
+            try!(self.handle_send_common(&mut data, private_data_size, get_public_key))
         };
 
         let packet = {
@@ -457,4 +472,7 @@ impl Onion {
 pub struct PipeControl;
 
 impl PipeControl {
+    pub fn send(&self, path: &OnionPath, addr: SocketAddr, data: Vec<u8>) {
+        unreachable!();
+    }
 }

@@ -1,10 +1,13 @@
-use std::io::net::ip::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::io::{MemReader, BufReader, IoResult, standard_error, OtherIoError};
-use utils::{Writable, Readable};
+use std::io::net::ip::{Ipv4Addr, Ipv6Addr, SocketAddr, IpAddr};
+use std::io::{MemReader, IoResult, standard_error, OtherIoError};
+use utils::{Writable, Readable, StructReader, StructWriter, other_error};
+use utils::bufreader::{BufReader};
 use libc::{AF_INET, AF_INET6, c_int};
 use net::sockets::{UdpWriter, UdpReader};
 use crypt::{Key};
 use std::{mem};
+use std::mem::{to_be16};
+use std::cast::{transmute};
 
 pub mod sockets;
 
@@ -50,7 +53,95 @@ impl Node {
     }
 
     pub fn family(&self) -> IpFamily {
-        IpFamily::from_addr(&self.addr)
+        IpFamily::from_addr(self.addr)
+    }
+}
+
+impl Writable for Node {
+    fn write_to(&self, w: &mut Writer) -> IoResult<()> {
+        try!(w.write_struct(&self.id));
+        w.write_struct(&self.addr)
+    }
+}
+
+impl Writable for Vec<Node> {
+    fn write_to(&self, w: &mut Writer) -> IoResult<()> {
+        for node in self.iter() {
+            try!(node.write_to(w));
+        }
+        Ok(())
+    }
+}
+
+impl Readable for Node {
+    fn read_from(r: &mut Reader) -> IoResult<Node> {
+        let id: Key = try!(r.read_struct());
+        let addr: SocketAddr = try!(r.read_struct());
+        Ok(Node { id: id, addr: addr })
+    }
+}
+
+impl Readable for Vec<Node> {
+    fn read_from(r: &mut Reader) -> IoResult<Vec<Node>> {
+        let nodes = Vec::new();
+        loop {
+            let node: Node = match r.read_struct() {
+                Ok(n) => n,
+                Err(e) => match e.kind {
+                    EndOfFile => break,
+                    _ => return other_error(),
+                },
+            };
+            nodes.push(node);
+        }
+        Ok(nodes)
+    }
+}
+
+pub trait IpAddrInfo {
+    fn is_lan(self) -> bool;
+    fn is_ipv4(self) -> bool;
+}
+
+impl IpAddrInfo for IpAddr {
+    fn is_lan(self) -> bool {
+        match self {
+            Ipv4Addr(a, b, c, d) => {
+                match a {
+                    127 | 10 => true,
+                    172      => 16 <= b && b <= 31,
+                    192      => b == 168,
+                    169      => b == 254 && 0 < c && c < 255,
+                    100      => b & 0xC0 == 0x40,
+                }
+            },
+            Ipv6Addr(a, b, c, d, e, f, g, h) => {
+                let x: [u8, ..16] = unsafe {
+                    let arr = [to_be16(a), to_be16(b), to_be16(c), to_be16(d),
+                               to_be16(e), to_be16(f), to_be16(g), to_be16(h)];
+                    transmute(arr)
+                };
+                if x[0] == 0xFF && x[1] < 3 && x[15] == 1 {
+                    return true;
+                }
+                if x[0] == 0xFE && x[1] & 0xC0 == 0x80 {
+                    return true;
+                }
+                if self.is_ipv4() {
+                    return Ipv4Addr(x[12], x[13], x[14], x[15]).is_lan()
+                }
+                a == 0 && b == 0 && c == 0 && d == 0 && e == 0 && f == 0 && g == 0 &&
+                    x[14] == 0 && x[15] == 1
+            },
+        }
+    }
+
+    fn is_ipv4(self) -> bool {
+        match self {
+            Ipv4Addr(..) => true,
+            Ipv6Addr(a, b, c, d, e, f, _, _) =>
+                a == 0 && b == 0 && c == 0 && d == 0 && e == 0 && f == 0xFFFF,
+        }
     }
 }
 

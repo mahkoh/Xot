@@ -1,9 +1,10 @@
 use std::io::net::ip::{SocketAddr};
-use std::io::{MemWriter, MemReader, BufReader, IoResult};
+use std::io::{MemWriter, MemReader, IoResult};
 use crypt::{Key, Nonce};
 use net::{Node, IpFamily, IPv4, IPv6};
 use utils;
 use utils::{other_error};
+use utils::bufreader::{BufReader};
 use rand::{task_rng};
 use std::{mem};
 
@@ -52,13 +53,13 @@ impl DHT {
         self.udp.send_to(addr, packet.get_ref());
     }
 
-    fn get_close_nodes(&self, close_to: &Key, req_addr: SocketAddr,
+    fn get_close_nodes(&self, close_to: &Key, lan_ok: bool,
                        only_hard: bool) -> Vec<Node> {
         let mut close_nodes = Vec::with_capacity(MAX_SENT_NODES);
-        self.close.get_close_nodes(close_to, req_addr, only_hard, &mut close_nodes);
+        self.close.get_close_nodes(close_to, lan_ok, only_hard, &mut close_nodes);
         for friend in self.friends.iter() {
             // hardening is not implemented for friends
-            friend.clients.get_close_nodes(close_to, req_addr, false, &mut close_nodes);
+            friend.clients.get_close_nodes(close_to, lan_ok, false, &mut close_nodes);
         }
         close_nodes
     }
@@ -386,7 +387,7 @@ impl ClientList {
         return true;
     }
 
-    fn get_close_nodes(&self, close_to: &Key, req_addr: SocketAddr, only_hard: bool,
+    fn get_close_nodes(&self, close_to: &Key, lan_ok: bool, only_hard: bool,
                        nodes: &mut Vec<Node>) {
         for cand in self.clients {
             if nodes.contains(cand.id) {
@@ -400,7 +401,7 @@ impl ClientList {
             if addr.is_bad() {
                 continue;
             }
-            if addr.is_lan() && !req_addr.is_lan() {
+            if addr.is_lan() && !lan_ok {
                 continue;
             }
             if !addr.is_lan() && only_hard && !addr.hardened() && cand.id != close_to {
@@ -536,4 +537,27 @@ impl TimedSocketAddr {
 pub struct DHTControl;
 
 impl DHTControl {
+    fn get_close_nodes(&self, id: &Key, lan_ok: bool, only_good: bool) -> Vec<Node> {
+        unreachable!();
+    }
+
+    fn get_closelist_nodes(&self) -> Vec<Node> {
+        unreachable!();
+    }
+
+    fn random_path(&self) -> IoResult<Box<[Node, ..3]>> {
+        unreachable!();
+    }
+
+    fn route_to_friend(&self, id: &Key, data: Vec<u8>) {
+        unreachable!();
+    }
+
+    fn del_friend(&self, id: &Key) {
+        unreachable!();
+    }
+
+    fn refresh_friend(&self, old: &Key, new: &Key) {
+        unreachable!();
+    }
 }

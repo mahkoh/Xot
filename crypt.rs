@@ -136,9 +136,9 @@ pub struct Key(pub [u8, ..KEY]);
 
 impl<'a> Key {
     /// Get the internal buffer.
-    pub fn raw(&'a self) -> &'a [u8] {
+    pub fn raw(&'a self) -> &'a [u8, ..KEY] {
         let &Key(ref key) = self;
-        key.as_slice()
+        key
     }
 
     /// Returns a machine using symmetric encryption with the nonce.
@@ -331,9 +331,9 @@ impl<'a> PrecomputedKey {
 }
 
 /// Hash data
-pub fn hash(data: &[u8]) -> Vec<u8> {
+pub fn hash(data: &[u8]) -> [u8, ..HASH] {
     unsafe {
-        let mut hash = Vec::from_elem(HASH, 0u8);
+        let mut hash: [u8, ..HASH] = unsafe { mem::uninit() };
         crypto_hash_sha256(hash.as_mut_ptr(), data.as_ptr(), data.len() as c_ulonglong);
         hash
     }

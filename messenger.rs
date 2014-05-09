@@ -1,4 +1,5 @@
 use std::io::{IoResult, MemWriter, MemReader};
+use std::io::net::ip::{SocketAddr};
 use std::str::{from_utf8};
 use time::{Timespec};
 use utils;
@@ -332,4 +333,7 @@ impl Messenger {
 pub struct MessengerControl;
 
 impl MessengerControl {
+    fn friend_request(&self, source: &Key, msg: ~str) {
+        unreachable!();
+    }
 }

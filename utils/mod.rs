@@ -1,9 +1,11 @@
-use std::io::{IoResult, MemWriter, MemReader, BufReader, OtherIoError, standard_error,
+use std::io::{IoResult, MemWriter, MemReader, OtherIoError, standard_error,
               IoError, EndOfFile};
 use crypt::Machine;
+use std::str::{from_utf8};
 
 pub mod ringbuffer;
 pub mod time;
+pub mod bufreader;
 
 /// A trait for objects which can be writte via `writer.write_struct()`.
 pub trait Writable {
@@ -80,15 +82,6 @@ impl FiniteReader for MemReader {
     }
 }
 
-impl<'a> FiniteReader for BufReader<'a> {
-    fn remaining(&mut self) -> uint {
-        match self.fill_buf() {
-            Ok(b) => b.len(),
-            Err(_) => 0,
-        }
-    }
-}
-
 /// A trait for `Reader`s which can return a slice of the remaining stream without having
 /// to copy the data.
 pub trait SlicableReader<'a> : Reader {
@@ -105,12 +98,6 @@ impl<'a> SlicableReader<'a> for MemReader {
 /// Returns the standard error of type `OtherIoError`.
 pub fn other_error<T>() -> IoResult<T> {
     Err(standard_error(OtherIoError))
-}
-
-/// Returns the current time in micro seconds.
-pub fn micro_time() -> u64 {
-    let now = time::sec();
-    (now.sec as u64 * 1000000) + (now.nsec as u64 / 1000)
 }
 
 impl Readable for Vec<u32> {
@@ -141,6 +128,16 @@ impl<'a> Writable for &'a [u32] {
             try!(w.write_be_u32(*x));
         }
         Ok(())
+    }
+}
+
+impl Readable for ~str {
+    fn read_from(r: &mut Reader) -> IoResult<~str> {
+        let data = try!(r.read_to_end());
+        match from_utf8(data.as_slice()) {
+            Some(string) => Ok(string.to_owned()),
+            None => other_error(),
+        }
     }
 }
 

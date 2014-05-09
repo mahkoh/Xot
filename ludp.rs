@@ -94,10 +94,10 @@ impl<'a> Connection<'a> {
             return utils::other_error();
         }
 
-        raw.send_buf.consume(other_recv - raw.other_recv);
+        raw.send_buf.consume((other_recv - raw.other_recv) as uint);
         raw.other_recv    = other_recv;
         raw.other_sent    = other_sent;
-        raw.last_sync     = utils::micro_time();
+        raw.last_sync     = utils::time::milli();
         raw.recv_counter  = counter;
         raw.send_counter += 1;
         raw.req_packets   = try!(data.read_struct());
@@ -166,7 +166,7 @@ impl<'a> Connection<'a> {
             }
             raw.recv_buf.resize(2*pos as uint);
         }
-        raw.last_recv = utils::micro_time();
+        raw.last_recv = utils::time::milli();
         raw.recv_buf.set_pos(pos as uint, data);
         loop {
             match raw.recv_buf.pop() {
@@ -188,7 +188,7 @@ impl<'a> Connection<'a> {
     }
 
     fn set_timeout(&mut self, sec: u64) {
-        self.raw_mut().killat = utils::micro_time() + 1000000u64 * sec;
+        self.raw_mut().killat = utils::time::micro() + 1_000_000 * sec;
     }
 
     fn raw<'b>(&'b self) -> &'b RawConnection {
@@ -218,6 +218,7 @@ struct RawConnection {
     status:       ConnectionStatus,
     recv_buf:     XBuffer<MemReader>,
     send_buf:     RingBuffer<Vec<u8>>,
+    req_packets:  Vec<u32>,
 }
 
 struct LosslessUDP {
@@ -241,11 +242,12 @@ impl<'a> LosslessUDP {
             confirmed:    true,
             timeout:      (task_rng().gen_range(1.0, 2.0) * CON_TIMEOUT) as u64,
             last_recv:    0,
-            last_sync:    utils::micro_time(),
+            last_sync:    utils::time::micro(),
             killat:       u64::MAX,
             status:       HandshakeSending,
             recv_buf:     XBuffer::new(DEFAULT_QUEUE_LEN),
             send_buf:     RingBuffer::new(DEFAULT_QUEUE_LEN),
+            req_packets:  Vec::new(),
         };
         raw.sent = raw.handshake1;
         let mut id = None;

@@ -1,14 +1,17 @@
-use std::io::{MemWriter, MemReader, BufReader, IoResult};
+use std::io::{MemWriter, MemReader, IoResult};
 use std::io::net::ip::{SocketAddr};
+use std::{mem};
 use crypt;
 use crypt::{Key, SecretKey, PrecomputedKey, key_pair, Nonce, KEY};
 use utils;
 use utils::time::{sec};
 use utils::ringbuffer::{RingBuffer};
-use utils::{other_error, Choice, One, Two};
-use net::{Node};
+use utils::bufreader::{BufReader};
+use utils::{other_error, Choice, One, Two, StructReader, StructWriter, CryptoWriter,
+            SlicableReader, CryptoReader};
+use net::{Node, IpAddrInfo};
 use rand;
-use rand::{task_rng};
+use rand::{task_rng, Rng};
 use onion::pipe::{PipeControl};
 use onion::consts::{META_REQUEST, ONION_FORWARD_REQUEST, FAKE_ID, CRYPTO,
                     CRYPTO_PACKET_FRIEND_REQ};
@@ -34,6 +37,9 @@ static MAX_ONION_CLIENTS: uint = 8;
 static META_TIMEOUT: u64 = 300;
 static MAX_PING_NODES_SECOND: uint = 5;
 static MAX_STORED_PINGED_NODES: uint = 9;
+static ONION_CONTACT_TIMEOUT: u64 = 120;
+static ONION_CONTACT_PING_INTERVAL: u64 = 30;
+static MIN_NODE_PING_TIME: u64 = 10;
 
 /// A node in the onion network.
 pub struct PathNode {
@@ -54,12 +60,12 @@ pub struct OnionPath {
 }
 
 impl OnionPath {
-    fn new(raw: [Node, ..3], dht_pub: &Key, dht_priv: &SecretKey) -> OnionPath {
-        let pub0 = dht_pub.clone();
+    fn new(raw: Box<[Node, ..3]>, dht_pub: &Key, dht_priv: &SecretKey) -> OnionPath {
+        let pub0 = *dht_pub;
         let (priv1, pub1) = crypt::key_pair();
         let (priv2, pub2) = crypt::key_pair();
 
-        let enc0 = PrecomputedKey::new(&dht_priv, &raw[0].id);
+        let enc0 = PrecomputedKey::new( dht_priv, &raw[0].id);
         let enc1 = PrecomputedKey::new(&priv1,    &raw[1].id);
         let enc2 = PrecomputedKey::new(&priv2,    &raw[2].id);
 
@@ -77,44 +83,6 @@ impl OnionPath {
     fn should_replace(&self) -> bool {
         let now = utils::time::sec();
         self.last_success + PATH_TIMEOUT < now || self.creation + PATH_MAX_LIFETIME < now
-    }
-}
-
-struct OnionPaths {
-    paths: Vec<OnionPath>,
-}
-
-impl OnionPaths {
-    fn random<'a>(&'a mut self, num: Option<uint>) -> Result<&'a OnionPath, ()> {
-        match self.paths.len() {
-            MAX_ONION_PATHS => {
-                let n = match num {
-                    Some(n) => n % MAX_ONION_PATHS,
-                    None    => task_rng().range(0, MAX_ONION_PATHS),
-                };
-                if self.paths.get(n).should_replace() {
-                    let nodes = try!(self.dht.random_path());
-                    *self.paths.get_mut(n) = OnionPath::new(nodes);
-                }
-                Ok(self.paths.get(n))
-            },
-            _ => {
-                let nodes = try!(self.dht.random_path());
-                self.paths.push(OnionPath::new(nodes));
-                let n = self.paths.len() - 1;
-                Ok(self.paths.get(n))
-            },
-        }
-    }
-
-    fn set_timeouts(&mut self, addr: SocketAddr) -> Option<uint> {
-        for (i, path) in self.paths.mut_iter().enumerate() {
-            if path.nodes[0].addr == addr {
-                path.last_success = utils::time::sec();
-                return Some(i);
-            }
-        }
-        None;
     }
 }
 
@@ -142,6 +110,40 @@ struct Friend<'a> {
 }
 
 impl<'a> Friend<'a> {
+    fn random_path<'a>(&'a mut self, num: Option<uint>) -> IoResult<&'a OnionPath> {
+        match self.raw.paths.len() {
+            MAX_ONION_PATHS => {
+                let n = match num {
+                    Some(n) => n % MAX_ONION_PATHS,
+                    None    => task_rng().gen_range(0, MAX_ONION_PATHS),
+                };
+                if self.raw.paths.get(n).should_replace() {
+                    let nodes = try!(self.dht.random_path());
+                    *self.raw.paths.get_mut(n) = OnionPath::new(nodes, self.dht_pub,
+                                                                self.dht_priv);
+                }
+                Ok(self.raw.paths.get(n))
+            },
+            _ => {
+                let nodes = try!(self.dht.random_path());
+                self.raw.paths.push(OnionPath::new(nodes, self.dht_pub,
+                                                   self.dht_priv));
+                let n = self.raw.paths.len() - 1;
+                Ok(self.raw.paths.get(n))
+            },
+        }
+    }
+
+    fn set_path_timeout(&mut self, addr: SocketAddr) -> Option<uint> {
+        for (i, path) in self.raw.paths.mut_iter().enumerate() {
+            if path.nodes[0].addr == addr {
+                path.last_success = utils::time::sec();
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// Change the onion status of the friend.
     /// 
     /// Use this instead of setting the onlien friend manually.
@@ -149,9 +151,9 @@ impl<'a> Friend<'a> {
         if self.raw.is_online && !online {
             self.raw.last_seen = utils::time::sec();
         }
-        self.is_online = online;
+        self.raw.is_online = online;
         if !online {
-            self.last_no_replay = utils::time::sec();
+            self.raw.last_no_replay = utils::time::sec();
         }
     }
 
@@ -169,13 +171,13 @@ impl<'a> Friend<'a> {
     /// If `dest` is Two(i), we take the contact at that position from our contact list.
     fn send_meta_request(&mut self, dest: Choice<&Node, uint>) -> IoResult<()> {
         // Let's do this first because all those other try!s probably won't fail.
-        let path = try!(self.raw.paths.random(None));
+        let path = try!(self.random_path(None));
 
         let (dest_addr, dest_id) = match dest {
             One(d) => (d.addr, &d.id),
             Two(i) => {
                 let c = &self.raw.contacts.get(i);
-                (c.addr, &c.real_id)
+                (c.addr, &c.id)
             },
         };
 
@@ -185,7 +187,7 @@ impl<'a> Friend<'a> {
             let private = MemWriter::new();
             // id is None for `myself`. We encode this as 0.
             match self.raw.id {
-                Some(n) => try!(private.write_be_u32(n+1)),
+                Some(n) => try!(private.write_be_u32((n+1) as u32)),
                 None    => try!(private.write_be_u32(0)),
             };
             try!(private.write_be_u64(utils::time::sec()));
@@ -211,14 +213,14 @@ impl<'a> Friend<'a> {
             let mut plain = MemWriter::new();
             match dest {
                 One(_) => try!(plain.write([0u8, ..PING_ID])),
-                Two(i) => try!(plain.write(self.contacts.get(i).ping_id)),
+                Two(i) => try!(plain.write(self.raw.contacts.get(i).ping_id)),
             }
-            try!(plain.write(self.real_id));
-            match self.id.is_none() {
-                true  => try!(plain.write_struct(self.data_public)),
+            try!(plain.write_struct(&self.raw.real_id));
+            match self.raw.id.is_none() {
+                true  => try!(plain.write_struct(self.data_key)),
                 false => try!(plain.write([0u8, ..KEY])),
             }
-            try!(plain.write(send_back));
+            try!(plain.write(send_back.as_slice()));
             plain.unwrap()
         };
 
@@ -227,11 +229,11 @@ impl<'a> Friend<'a> {
             let mut packet = MemWriter::new();
             try!(packet.write_u8(META_REQUEST));
             try!(packet.write_struct(&nonce));
-            try!(packet.write_struct(self.tmp_public));
+            try!(packet.write_struct(&self.raw.tmp_public));
             {
-                let machine =
-                    PrecomputedKey::new(self.tmp_private, dest_id).with_nonce(&nonce);
-                try!(packet.write_encrypted(&machine, plain.get_ref()));
+                let machine = PrecomputedKey::new(&self.raw.tmp_private,
+                                                  dest_id).with_nonce(&nonce);
+                try!(packet.write_encrypted(&machine, plain.as_slice()));
             }
             packet.unwrap()
         };
@@ -244,8 +246,8 @@ impl<'a> Friend<'a> {
             }
         };
 
-        self.pipe.send(path, addr, packet.get_ref());
-        self.raw.last_pinged.push(Ping { id: id, timestamp: utils::time::sec() });
+        self.pipe.send(path, addr, packet);
+        self.raw.last_pinged.push(Ping { id: *id, timestamp: utils::time::sec() });
         self.raw.ping_nodes_second += 1;
     }
 
@@ -262,7 +264,7 @@ impl<'a> Friend<'a> {
             }
             total_live_contacts += 1;
             if contact.data_key.is_some() {
-                match self.raw.paths.random(None) {
+                match self.random_path(None) {
                     Ok(p)  => paths.push((i, p.clone())),
                     Err(_) => { },
                 }
@@ -275,33 +277,33 @@ impl<'a> Friend<'a> {
 
         let nonce = Nonce::random();
         let encrypted = {
-            let machine =
-                PrecomputedKey::new(self.crypto_private, self.real_id).with_nonce(&nonce);
+            let machine = PrecomputedKey::new(self.crypto_private,
+                                              &self.raw.real_id).with_nonce(&nonce);
             let mut encrypted = MemWriter::new();
-            try!(encrypted.write_struct(&self.crypto_public));
+            try!(encrypted.write_struct(self.crypto_public));
             try!(encrypted.write_encrypted(&machine, data));
             encrypted.unwrap()
         };
 
-        for (i, path) in paths.iter() {
-            let node = self.nodes.get(i);
+        for &(i, path) in paths.iter() {
+            let node = self.raw.contacts.get(i);
 
             let packet = {
                 let (rand_priv, rand_pub) = key_pair();
                 let machine = {
                     let data_key = node.data_key.as_ref().unwrap();
-                    PrecomputedKey::new(&rand_priv, data_key).with_nonce(&nonce);
+                    PrecomputedKey::new(&rand_priv, data_key).with_nonce(&nonce)
                 };
                 let mut packet = MemWriter::new();
                 try!(packet.write_u8(ONION_FORWARD_REQUEST));
                 try!(packet.write_struct(&self.raw.real_id));
                 try!(packet.write_struct(&nonce));
                 try!(packet.write_struct(&rand_pub));
-                try!(packet.write_encrypted(&machine, encrypted));
+                try!(packet.write_encrypted(&machine, encrypted.as_slice()));
                 packet.unwrap()
             };
 
-            self.pipe.send(path, node.addr, packet.as_slice());
+            self.pipe.send(path, node.addr, packet);
         }
         Ok(())
     }
@@ -311,27 +313,27 @@ impl<'a> Friend<'a> {
     /// This function should ONLY be called on `myself`.
     fn do_myself(&mut self) {
         let count = 0u;
-        for i in range(0, self.raw.nodes.len()) {
-            if self.raw.nodes[i].timed_out() {
+        for i in range(0, self.raw.contacts.len()) {
+            if self.raw.contacts.get(i).timed_out() {
                 continue;
             }
             count += 1;
-            if self.raw.nodes[i].last_pinged == 0 {
-                self.raw.nodes[i].last_pinged = 1;
+            if self.raw.contacts.get(i).last_pinged == 0 {
+                self.raw.contacts.get(i).last_pinged = 1;
                 continue;
             }
-            let interval = match self.raw.nodes[i].data_key {
+            let interval = match self.raw.contacts.get(i).data_key {
                 Some(_) => ANNOUNCE_INTERVAL_NOT_ANNOUNCED,
                 None    => ANNOUNCE_INTERVAL_ANNOUNCED,
             };
-            if self.raw.nodes[i].last_pinged + interval > utils::time::sec() {
+            if self.raw.contacts.get(i).last_pinged + interval > utils::time::sec() {
                 self.send_meta_request(Two(i));
             }
         }
         if count <= task_rng().gen_range(0, MAX_ONION_CLIENTS) {
-            let is_lan = 1;
+            let lan_ok = true;
             let want_good = false;
-            let nodes = self.dht.get_close(self.crypto_public, is_lan, want_good);
+            let nodes = self.dht.get_close_nodes(self.crypto_public, lan_ok, want_good);
             for node in nodes.iter() {
                 self.send_meta_request(One(node));
             }
@@ -346,21 +348,21 @@ impl<'a> Friend<'a> {
             return;
         }
         let count = 0u;
-        for i in range(0, self.raw.nodes.len()) {
-            if self.raw.nodes[i].timed_out() {
+        for i in range(0, self.raw.contacts.len()) {
+            if self.raw.contacts.get(i).timed_out() {
                 continue;
             }
             count += 1;
-            if self.raw.nodes[i].should_ping() {
-                let path_id = None;
+            if self.raw.contacts.get(i).should_ping() {
                 self.send_meta_request(Two(i));
-                self.raw.nodes[i].last_pinged = utils::time::sec();
+                self.raw.contacts.get(i).last_pinged = utils::time::sec();
             }
         }
         if count <= task_rng().gen_range(0, MAX_ONION_CLIENTS) {
-            let is_lan = 1;
+            // Is this correct?
+            let lan_ok = false;
             let want_good = false;
-            let nodes = self.dht.get_close(self.crypto_public, is_lan, want_good);
+            let nodes = self.dht.get_close_nodes(self.crypto_public, lan_ok, want_good);
             for node in nodes.iter() {
                 self.send_meta_request(One(node));
             }
@@ -390,12 +392,12 @@ impl<'a> Friend<'a> {
     /// Generate a fake id packet and send it via onion or DHT.
     fn send_fake_id(&self, dht_instead_of_onion: bool) -> IoResult<()> {
         let packet = {
-            let close_nodes = self.dht.close_nodes();
+            let close_nodes = self.dht.get_closelist_nodes();
             let mut packet = MemWriter::new();
             try!(packet.write_u8(FAKE_ID));
             try!(packet.write_be_u64(utils::time::sec()));
             try!(packet.write_struct(self.dht_pub));
-            try!(packet.write_struct(close_nodes));
+            try!(packet.write_struct(&close_nodes));
             packet.unwrap()
         };
         if dht_instead_of_onion {
@@ -414,7 +416,7 @@ impl<'a> Friend<'a> {
             try!(encrypted.write_struct(&nonce));
             let machine = PrecomputedKey::new(self.crypto_private,
                                               &self.raw.real_id).with_nonce(&nonce);
-            try!(encrypted.write_encrypted(&nonce, data));
+            try!(encrypted.write_encrypted(&machine, data));
             encrypted.unwrap()
         };
 
@@ -422,20 +424,20 @@ impl<'a> Friend<'a> {
             let nonce = Nonce::random();
             let mut tmp = MemWriter::new();
             try!(tmp.write_u8(FAKE_ID));
-            try!(tmp.write(encrypted));
+            try!(tmp.write(encrypted.as_slice()));
 
             let machine = PrecomputedKey::new(self.dht_priv,
                                               &self.raw.real_id).with_nonce(&nonce);
             let mut packet = MemWriter::new();
             try!(packet.write_u8(CRYPTO));
-            try!(packet.write_struct(&self.fake_id.unwrap()));
+            try!(packet.write_struct(&self.raw.fake_id.unwrap()));
             try!(packet.write_struct(self.dht_pub));
             try!(packet.write_struct(&nonce));
-            try!(packet.write_encrypted(&nonce, tmp.get_ref()));
+            try!(packet.write_encrypted(&machine, tmp.get_ref()));
             packet.unwrap()
         };
 
-        self.dht.route_to_friend(self.fake_id.unwrap(), packet);
+        self.dht.route_to_friend(self.raw.fake_id.as_ref().unwrap(), packet);
         Ok(())
     }
 }
@@ -458,9 +460,31 @@ struct Contact {
     ping_id:     [u8, ..32],
 }
 
+impl Contact {
+    fn new() -> Contact {
+        let contact: Contact = unsafe { mem::init() };
+        contact.data_key = None;
+        contact
+    }
+
+    fn timed_out(&self) -> bool {
+        self.timestamp + ONION_CONTACT_TIMEOUT < utils::time::sec()
+    }
+
+    fn should_ping(&self) -> bool {
+        self.last_pinged + ONION_CONTACT_PING_INTERVAL < utils::time::sec()
+    }
+}
+
 struct Ping {
     id: Key,
     timestamp: u64,
+}
+
+impl Ping {
+    fn timed_out(&self) -> bool {
+        self.timestamp + MIN_NODE_PING_TIME < utils::time::sec()
+    }
 }
 
 /// A friend in the onion network or `myself`.
@@ -481,12 +505,15 @@ struct RawFriend {
     /// TODO
     tmp_private:    SecretKey,
     /// Path's generated to connect to the friend.
-    paths:          OnionPaths,
+    paths: Vec<OnionPath>,
     /// TODO Field to prevent replay attacks.
     last_no_replay: u64,
     /// Last time we saw this friend online.
     last_seen: u64,
     last_pinged: RingBuffer<Ping>,
+    ping_nodes_second: uint,
+    last_onion_fake_id: u64,
+    last_dht_fake_id: u64,
 }
 
 /// Iterator over all convenience wrappers for all friends.
@@ -495,12 +522,12 @@ struct FriendsIter<'a> {
     pos: uint,
 }
 
-impl<'a> Iterator<&'a mut Friend<'a>> for FriendsIter<'a> {
-    fn next(&mut self) -> Option<&'a mut Friend> {
+impl<'a> Iterator<Friend<'a>> for FriendsIter<'a> {
+    fn next(&mut self) -> Option<Friend<'a>> {
         if self.pos == self.client.friends.len() {
             return None;
         }
-        let friend = self.client.get_friend(self.pos);
+        let friend = self.client.get_friend(self.pos).unwrap();
         self.pos += 1;
         Some(friend)
     }
@@ -512,7 +539,7 @@ struct Client {
     /// shift elements in it. TODO Friend -> Option<Friend>
     friends:     Vec<RawFriend>,
     /// Temporary symmetric key.
-    symmetric:   SecretKey,
+    symmetric: Key,
     /// The pipe control.
     pipe: PipeControl,
     /// Our public data key.
@@ -533,12 +560,14 @@ struct Client {
     nospam: [u8, ..4],
     /// The messenger contorller.
     messenger: MessengerControl,
+    /// 
+    myself: RawFriend,
 }
 
 impl Client {
     /// Do all the maintenance work. Run this exactly once per second.
     fn do_client(&mut self) {
-        self.myself.do_myself();
+        self.myself().do_myself();
         self.do_friends();
     }
 
@@ -552,7 +581,7 @@ impl Client {
         for f in self.friends_iter() {
             f.do_friend();
             if f.raw.fake_id.is_some() && !f.raw.is_online && f.is_kill() {
-                f.dht.del_friend(box f.raw.fake_id.unwrap());
+                f.dht.del_friend(f.raw.fake_id.as_ref().unwrap());
                 f.raw.fake_id = None;
             }
         }
@@ -573,7 +602,7 @@ impl Client {
             raw:            self.friends.get(i),
             symmetric:      &self.symmetric,
             pipe:           &self.pipe,
-            data_key:       &self.data_public,
+            data_key:       &self.data_key_public,
             crypto_private: &self.crypto_private,
             crypto_public:  &self.crypto_public,
             dht_pub:        &self.dht_pub,
@@ -629,11 +658,8 @@ impl Client {
             let send_back = BufReader::new(send_back);
             let nonce: Nonce = try!(send_back.read_struct());
             let private =
-                self.symmetric.with_nonce(&nonce).decrypt(send_back.slice_to_end());
-            let private = match private {
-                Some(p) => MemReader::new(p),
-                None    => return other_error(),
-            };
+                try!(self.symmetric.with_nonce(&nonce).decrypt(send_back.slice_to_end()));
+            let private = MemReader::new(private);
             let num = match try!(private.read_be_u32()) {
                 0 => None,
                 n => Some(n-1),
@@ -657,11 +683,11 @@ impl Client {
         let decrypted = {
             let nonce: Nonce = try!(data.read_struct());
             let friend = match num {
-                Some(n) => try!(self.get_friend(n)),
-                None    => self.myself,
+                Some(n) => try!(self.get_friend(n as uint)),
+                None    => self.myself(),
             };
             let machine =
-                PrecomputedKey::new(&friend.tmp_private, &id).with_nonce(&nonce);
+                PrecomputedKey::new(&friend.raw.tmp_private, &id).with_nonce(&nonce);
             let decrypted = try!(data.read_encrypted(&machine));
             MemReader::new(decrypted)
         };
@@ -675,22 +701,22 @@ impl Client {
         /////
 
         let friend = match num {
-            Some(n) => try!(self.get_friend(n)),
+            Some(n) => try!(self.get_friend(n as uint)),
             None => {
-                if is_data_key && self.myself.data_key != ping_id_or_data_key {
+                if is_data_key && self.data_key_public != ping_id_or_data_key {
                     is_data_key = false;
                 }
-                self.get_myself()
+                self.myself()
             },
         };
         // Sort worst --> best.
-        friend.contacts.sort_by(|c1,c2| {
+        friend.raw.contacts.sort_by(|c1,c2| {
             match (c1.timed_out(), c2.timed_out()) {
                 (true,  true)  => Equal,
                 (false, true)  => Greater,
                 (true,  false) => Less,
                 // real_id.cmp returs better < worse, so we interchange the arguments.
-                (false, false) => friend.real_id.cmp(&c2.id, &c1.id),
+                (false, false) => friend.raw.real_id.cmp(&c2.id, &c1.id),
             }
         });
         // Store some info for use further down. This isn't perfect but good enough for
@@ -700,19 +726,20 @@ impl Client {
         // We need a spot to store the respondee in. If the list is already filled, we try
         // to find a node which is worse. If the list isn't full, we simply add a new node
         // to it.
-        let index = match friend.contacts.len() {
+        let index = match friend.raw.contacts.len() {
             MAX_CLIENTS => {
                 let index = {
-                    let contact = friend.contacts.get(0);
+                    let contact = friend.raw.contacts.get(0);
                     // See comment above.
                     has_timed_out = contact.timed_out();
                     furthest_away = Some(contact.id);
-                    match has_timed_out || friend.real_id.cmp(contact.id, id) == Greater {
+                    match has_timed_out ||
+                          friend.raw.real_id.cmp(&contact.id, &id) == Greater {
                         true => Some(0),
                         false => None,
                     }
                 };
-                for (i, contact) in friend.contacts.iter().enumerate() {
+                for (i, contact) in friend.raw.contacts.iter().enumerate() {
                     if contact.id == id {
                         index = Some(i);
                         break;
@@ -721,18 +748,18 @@ impl Client {
                 index
             },
             _ => {
-                friend.contacts.push(Node::new());
-                Some(friend.contacts.len()-1)
+                friend.raw.contacts.push(Contact::new());
+                Some(friend.raw.contacts.len()-1)
             },
         };
         match index {
             Some(i) => {
-                let c = friend.contacts.get(i);
+                let c = friend.raw.contacts.get(i);
                 c.id = id;
                 c.addr = addr;
                 c.timestamp = utils::time::sec();
-                c.lost_pinged = utils::time::sec();
-                c.path_used = friend.paths.set_timeouts(source);
+                c.last_pinged = utils::time::sec();
+                c.path_used = friend.set_path_timeout(source).unwrap();
                 match is_data_key {
                     true  => c.data_key = Some(ping_id_or_data_key),
                     false => c.ping_id = *ping_id_or_data_key.raw(),
@@ -746,25 +773,25 @@ impl Client {
         /////
 
         // Remove all timed out pings.
-        friend.last_pinged.remove_while(|p| p.timed_out());
+        friend.raw.last_pinged.remove_while(|p| p.timed_out());
 
-        let lan_ok = source.is_lan();
+        let lan_ok = source.ip.is_lan();
         for node in nodes.iter() {
-            if friend.ping_nodes_second > MAX_PING_NODES_SECOND {
+            if friend.raw.ping_nodes_second > MAX_PING_NODES_SECOND {
                 break;
             }
-            if !lan_ok && node.addr.is_lan() {
+            if !lan_ok && node.addr.ip.is_lan() {
                 continue;
             }
             // Don't send a request if the list is already good.
             if !has_timed_out && furthest_away.is_some() {
                 let furthest_away = furthest_away.as_ref().unwrap();
-                if friend.real_id.cmp(furthest_away.id, node.id) == Less {
+                if friend.raw.real_id.cmp(furthest_away, &node.id) == Less {
                     continue;
                 }
             }
             // Don't ping if the list already contains the node.
-            if friend.raw.nodes.any(|n| n.id == node.id) {
+            if friend.raw.contacts.iter().any(|c| c.id == node.id) {
                 continue;
             }
             // Don't ping if we're already pinging.
@@ -773,7 +800,7 @@ impl Client {
                     continue;
                 }
             }
-            let _ = friend.send_meta_request(One(&node));
+            let _ = friend.send_meta_request(One(node));
         }
 
         Ok(())
@@ -786,7 +813,7 @@ impl Client {
         let encrypted = {
             let key: Key = try!(data.read_struct());
             let machine =
-                PrecomputedKey::new(&self.data_private, &key).with_nonce(&nonce);
+                PrecomputedKey::new(&self.data_key_private, &key).with_nonce(&nonce);
             MemReader::new(try!(data.read_encrypted(&machine)))
         };
         let key: Key = try!(encrypted.read_struct());
@@ -798,7 +825,7 @@ impl Client {
         };
         match try!(encrypted.read_u8()) {
             FAKE_ID => self.handle_fake_id(&key, encrypted),
-            FRIEND_REQUEST => { /* ... */ },
+            FRIEND_REQUEST => { unreachable!() },
         }
     }
 
@@ -825,7 +852,7 @@ impl Client {
     fn handle_fake_id(&self, id: &Key, mut data: MemReader) -> IoResult<()> {
         let friend = try!(self.find_friend(id));
         {
-            let no_replay = try!(data.read_be_u64(data));
+            let no_replay = try!(data.read_be_u64());
             match no_replay <= friend.raw.last_no_replay {
                 true  => return other_error(),
                 false => friend.raw.last_no_replay = no_replay,
@@ -833,14 +860,14 @@ impl Client {
         }
         {
             let fake_id: Key = try!(data.read_struct());
-            match friend.fake_id {
+            match friend.raw.fake_id {
                 Some(id) => if fake_id != id {
                     friend.dht.refresh_friend(&id, &fake_id);
-                    friend.last_seen = utils::time::sec();
+                    friend.raw.last_seen = utils::time::sec();
                 },
                 None => friend.dht.add_friend(&fake_id),
             }
-            friend.fake_id = Some(fake_id);
+            friend.raw.fake_id = Some(fake_id);
         }
         let nodes: Vec<Node> = try!(data.read_struct());
         friend.dht.get_all_nodes(nodes, friend.raw.fake_id.unwrap());

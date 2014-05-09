@@ -31,16 +31,35 @@ impl<'a, T> RingBuffer<T> {
         self.len;
     }
 
+    pub fn cap(&self) -> uint {
+        self.buf.len()
+    }
+
     pub fn remove_while(&mut self, f: |&T| -> bool) {
         loop {
             if self.len == 0 {
                 return;
             }
-            if !f(self.buf.get(self.front)) {
+            if !f(self.buf.get(self.front).as_ref().unwrap()) {
                 return;
             }
             *self.buf.get(self.front) = None;
             self.len -= 1;
+            self.front += 1;
+            if self.front == self.buf.len() {
+                self.front = 0;
+            }
+        }
+    }
+
+    pub fn consume(&mut self, n: uint) {
+        loop {
+            if self.len == 0 || n == 0 {
+                return;
+            }
+            *self.buf.get(self.front) = None;
+            self.len -= 1;
+            n -= 1;
             self.front += 1;
             if self.front == self.buf.len() {
                 self.front = 0;
