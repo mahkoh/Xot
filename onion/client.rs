@@ -1,11 +1,50 @@
-use std::io::{MemWriter, MemReader, IoResult};
-use crypt::{Key};
-use utils::{other_error};
+use std::io::{MemWriter, MemReader, BufReader, IoResult};
+use std::io::net::ip::{SocketAddr};
+use crypt;
+use crypt::{Key, SecretKey, PrecomputedKey, key_pair, Nonce, KEY};
+use utils;
+use utils::time::{sec};
+use utils::ringbuffer::{RingBuffer};
+use utils::{other_error, Choice, One, Two};
+use net::{Node};
+use rand;
+use rand::{task_rng};
+use onion::pipe::{PipeControl};
+use onion::consts::{META_REQUEST, ONION_FORWARD_REQUEST, FAKE_ID, CRYPTO,
+                    CRYPTO_PACKET_FRIEND_REQ};
+use dht;
+use dht::{DHTControl};
+use messenger::{MessengerControl};
 
 /// Size of send back data in an meta request.
 static SEND_BACK: uint = 108u;
 /// Size of a ping id in a meto request.
 static PING_ID: uint = 32u;
+/// Path timeout in seconds.
+static PATH_TIMEOUT: u64 = 30;
+/// Maximal path lifetime in seconds.
+static PATH_MAX_LIFETIME: u64 = 600;
+/// Friend timeout in seconds.
+static DEAD_ONION_TIMEOUT: u64 = 600;
+static ANNOUNCE_INTERVAL_NOT_ANNOUNCED: u64 = 10;
+static ANNOUNCE_INTERVAL_ANNOUNCED: u64 = 30;
+static ONION_FAKE_ID_INTERVAL: u64 = 30;
+static DHT_FAKE_ID_INTERVAL: u64 = 20;
+static MAX_ONION_CLIENTS: uint = 8;
+static META_TIMEOUT: u64 = 300;
+static MAX_PING_NODES_SECOND: uint = 5;
+static MAX_STORED_PINGED_NODES: uint = 9;
+
+/// A node in the onion network.
+pub struct PathNode {
+    /// Our public key generated specifically for this node.
+    public: Key,
+    /// The key precomputed from the peer's public key and the private key which
+    /// corresponds to the public key above.
+    encoder: PrecomputedKey,
+    /// The address of the node.
+    addr: SocketAddr,
+}
 
 /// The intemediate steps in an onion request.
 pub struct OnionPath {
@@ -47,23 +86,23 @@ struct OnionPaths {
 
 impl OnionPaths {
     fn random<'a>(&'a mut self, num: Option<uint>) -> Result<&'a OnionPath, ()> {
-        match paths.len() {
+        match self.paths.len() {
             MAX_ONION_PATHS => {
                 let n = match num {
                     Some(n) => n % MAX_ONION_PATHS,
                     None    => task_rng().range(0, MAX_ONION_PATHS),
                 };
-                if self.paths[n].should_replace() {
+                if self.paths.get(n).should_replace() {
                     let nodes = try!(self.dht.random_path());
-                    self.paths[n] = OnionPath::new(nodes);
+                    *self.paths.get_mut(n) = OnionPath::new(nodes);
                 }
-                Ok(&self.paths[n])
+                Ok(self.paths.get(n))
             },
             _ => {
                 let nodes = try!(self.dht.random_path());
                 self.paths.push(OnionPath::new(nodes));
                 let n = self.paths.len() - 1;
-                Ok(&self.paths[n])
+                Ok(self.paths.get(n))
             },
         }
     }
@@ -102,7 +141,7 @@ struct Friend<'a> {
     dht:            &'a DHTControl,
 }
 
-impl Friend {
+impl<'a> Friend<'a> {
     /// Change the onion status of the friend.
     /// 
     /// Use this instead of setting the onlien friend manually.
@@ -186,7 +225,7 @@ impl Friend {
         let packet = {
             let nonce = Nonce::random();
             let mut packet = MemWriter::new();
-            try!(packet.write_u8(ANNOUNCE_REQUEST));
+            try!(packet.write_u8(META_REQUEST));
             try!(packet.write_struct(&nonce));
             try!(packet.write_struct(self.tmp_public));
             {
@@ -205,7 +244,7 @@ impl Friend {
             }
         };
 
-        self.pipe.send(path, n.addr, packet.get_ref());
+        self.pipe.send(path, addr, packet.get_ref());
         self.raw.last_pinged.push(Ping { id: id, timestamp: utils::time::sec() });
         self.raw.ping_nodes_second += 1;
     }
@@ -221,7 +260,7 @@ impl Friend {
             if contact.timed_out() {
                 continue;
             }
-            total_contacts += 1;
+            total_live_contacts += 1;
             if contact.data_key.is_some() {
                 match self.raw.paths.random(None) {
                     Ok(p)  => paths.push((i, p.clone())),
@@ -230,7 +269,7 @@ impl Friend {
             }
         }
         // Formula discovered by irungentoo using the scientific method.
-        if paths.len() < (total_contacts / 4) + 1 {
+        if paths.len() < (total_live_contacts / 4) + 1 {
             return other_error();
         }
 
@@ -255,7 +294,7 @@ impl Friend {
                 };
                 let mut packet = MemWriter::new();
                 try!(packet.write_u8(ONION_FORWARD_REQUEST));
-                try!(packet.write_struct(&public));
+                try!(packet.write_struct(&self.raw.real_id));
                 try!(packet.write_struct(&nonce));
                 try!(packet.write_struct(&rand_pub));
                 try!(packet.write_encrypted(&machine, encrypted));
@@ -292,8 +331,7 @@ impl Friend {
         if count <= task_rng().gen_range(0, MAX_ONION_CLIENTS) {
             let is_lan = 1;
             let want_good = false;
-            let kind = task_rng().choose([AF_INET, AF_INET6]);
-            let nodes = dht.get_close(self.crypto_public, kind, is_lan, want_good);
+            let nodes = self.dht.get_close(self.crypto_public, is_lan, want_good);
             for node in nodes.iter() {
                 self.send_meta_request(One(node));
             }
@@ -322,8 +360,7 @@ impl Friend {
         if count <= task_rng().gen_range(0, MAX_ONION_CLIENTS) {
             let is_lan = 1;
             let want_good = false;
-            let kind = task_rng().choose([AF_INET, AF_INET6]);
-            let nodes = self.dht.get_close(self.crypto_public, kind, is_lan, want_good);
+            let nodes = self.dht.get_close(self.crypto_public, is_lan, want_good);
             for node in nodes.iter() {
                 self.send_meta_request(One(node));
             }
@@ -357,7 +394,7 @@ impl Friend {
             let mut packet = MemWriter::new();
             try!(packet.write_u8(FAKE_ID));
             try!(packet.write_be_u64(utils::time::sec()));
-            try!(packet.write_struct(dht_pub));
+            try!(packet.write_struct(self.dht_pub));
             try!(packet.write_struct(close_nodes));
             packet.unwrap()
         };
@@ -385,12 +422,12 @@ impl Friend {
             let nonce = Nonce::random();
             let mut tmp = MemWriter::new();
             try!(tmp.write_u8(FAKE_ID));
-            try!(tmy.write(encrypted));
+            try!(tmp.write(encrypted));
 
-            let machine = PrecomputedKey::New(self.dht_priv,
+            let machine = PrecomputedKey::new(self.dht_priv,
                                               &self.raw.real_id).with_nonce(&nonce);
             let mut packet = MemWriter::new();
-            try!(packet.write_u8(PACKET_CRYPTO));
+            try!(packet.write_u8(CRYPTO));
             try!(packet.write_struct(&self.fake_id.unwrap()));
             try!(packet.write_struct(self.dht_pub));
             try!(packet.write_struct(&nonce));
@@ -421,6 +458,11 @@ struct Contact {
     ping_id:     [u8, ..32],
 }
 
+struct Ping {
+    id: Key,
+    timestamp: u64,
+}
+
 /// A friend in the onion network or `myself`.
 struct RawFriend {
     /// Is the friend online.
@@ -443,7 +485,8 @@ struct RawFriend {
     /// TODO Field to prevent replay attacks.
     last_no_replay: u64,
     /// Last time we saw this friend online.
-    last_seen:      u64,
+    last_seen: u64,
+    last_pinged: RingBuffer<Ping>,
 }
 
 /// Iterator over all convenience wrappers for all friends.
@@ -452,12 +495,12 @@ struct FriendsIter<'a> {
     pos: uint,
 }
 
-impl<'a> Iterator<&'a mut Friend> for FriendsIter<'a> {
+impl<'a> Iterator<&'a mut Friend<'a>> for FriendsIter<'a> {
     fn next(&mut self) -> Option<&'a mut Friend> {
         if self.pos == self.client.friends.len() {
             return None;
         }
-        let friend = self.client.get_friend(pos);
+        let friend = self.client.get_friend(self.pos);
         self.pos += 1;
         Some(friend)
     }
@@ -522,7 +565,7 @@ impl Client {
     /// Create a convenience wrapper for the friend at position `i`.
     ///
     /// Fails if i is out of bounds.
-    fn get_friend(&'a self, i: uint) -> IoResult<Friend<'a>> {
+    fn get_friend<'a>(&'a self, i: uint) -> IoResult<Friend<'a>> {
         if i >= self.friends.len() {
             return other_error();
         }
@@ -540,7 +583,7 @@ impl Client {
         Ok(friend)
     }
 
-    fn find_friend(&'a self, id: &Key) -> IoResult<Friend<'a>> {
+    fn find_friend<'a>(&'a self, id: &Key) -> IoResult<Friend<'a>> {
         match self.friends.iter().position(|f| f.real_id == *id) {
             Some(i) => self.get_friend(i),
             None    => other_error()
@@ -600,7 +643,7 @@ impl Client {
             let addr: SocketAddr = try!(private.read_struct());
 
             let now = utils::time::sec();
-            if time + ANNOUNCE_TIMEOUT < now || now < time {
+            if time + META_TIMEOUT < now || now < time {
                 return other_error();
             }
             (num, addr, id)
@@ -691,8 +734,8 @@ impl Client {
                 c.lost_pinged = utils::time::sec();
                 c.path_used = friend.paths.set_timeouts(source);
                 match is_data_key {
-                    true  => node.data_key = Some(ping_id_or_data_key),
-                    false => node.ping_id = *ping_id_or_data_key.raw(),
+                    true  => c.data_key = Some(ping_id_or_data_key),
+                    false => c.ping_id = *ping_id_or_data_key.raw(),
                 }
             },
             None => { }
@@ -742,16 +785,18 @@ impl Client {
 
         let encrypted = {
             let key: Key = try!(data.read_struct());
-            let machine = Precomputed::new(&self.data_private, &key).with_nonce(&nonce);
+            let machine =
+                PrecomputedKey::new(&self.data_private, &key).with_nonce(&nonce);
             MemReader::new(try!(data.read_encrypted(&machine)))
         };
         let key: Key = try!(encrypted.read_struct());
 
         let encrypted = {
-            let machine = Precomputed::new(&self.crypto_private, &key).with_nonce(&nonce);
+            let machine =
+                PrecomputedKey::new(&self.crypto_private, &key).with_nonce(&nonce);
             MemReader::new(try!(encrypted.read_encrypted(&machine)))
         };
-        match try!(encypted.read_u8()) {
+        match try!(encrypted.read_u8()) {
             FAKE_ID => self.handle_fake_id(&key, encrypted),
             FRIEND_REQUEST => { /* ... */ },
         }

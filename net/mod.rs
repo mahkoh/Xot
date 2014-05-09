@@ -1,10 +1,86 @@
 use std::io::net::ip::{Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::io::{MemReader, IoResult, standard_error, OtherIoError};
+use std::io::{MemReader, BufReader, IoResult, standard_error, OtherIoError};
 use utils::{Writable, Readable};
-use libc::{AF_INET, AF_INET6};
-use sockets::{UdpWriter, UdpReader};
+use libc::{AF_INET, AF_INET6, c_int};
+use net::sockets::{UdpWriter, UdpReader};
+use crypt::{Key};
+use std::{mem};
 
-mod sockets;
+pub mod sockets;
+
+pub struct Node {
+    id: Key,
+    addr: SocketAddr,
+}
+
+impl Node {
+    pub fn new() -> Node {
+        unsafe { mem::init() }
+    }
+
+    pub fn parse4(data: &[u8]) -> IoResult<Vec<Node>> {
+        let data = BufReader::new(data);
+        let nodes = Vec::new();
+        while !data.eof() {
+            let id: Key = try!(data.read_struct());
+            let a = try!(data.read_u8());
+            let b = try!(data.read_u8());
+            let c = try!(data.read_u8());
+            let d = try!(data.read_u8());
+            let port = try!(data.read_be_u16());
+            data.consume(2);
+            let ip = Ipv4Addr(a, b, c, d);
+            let addr = SocketAddr { ip: ip, port: port };
+            let node = Node { id: id, addr: addr };
+            nodes.push(node);
+        }
+        Ok(nodes)
+    }
+
+    pub fn parse(data: &[u8]) -> IoResult<Vec<Node>> {
+        let data = BufReader::new(data);
+        let nodes = Vec::new();
+        while !data.eof() {
+            let id: Key = try!(data.read_struct());
+            let addr: SocketAddr = try!(data.read_struct());
+            let node = Node { id: id, addr: addr };
+            nodes.push(node);
+        }
+        Ok(nodes)
+    }
+
+    pub fn family(&self) -> IpFamily {
+        IpFamily::from_addr(&self.addr)
+    }
+}
+
+pub enum IpFamily {
+    IPv4,
+    IPv6,
+}
+
+impl IpFamily {
+    fn to_c_int(&self) -> c_int {
+        match *self {
+            IPv4 => AF_INET,
+            IPv6 => AF_INET6,
+        }
+    }
+
+    pub fn is_ipv6(&self) -> bool {
+        match *self {
+            IPv4 => false,
+            IPv6 => true,
+        }
+    }
+
+    pub fn from_addr(addr: SocketAddr) -> IpFamily {
+        match addr.ip {
+            Ipv4Addr(..) => IPv4,
+            _ => IPv6,
+        }
+    }
+}
 
 impl Writable for SocketAddr {
     fn write_to(&self, writer: &mut Writer) -> IoResult<()> {

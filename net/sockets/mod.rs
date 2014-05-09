@@ -1,12 +1,3 @@
-#![crate_id="sockets"]
-#![crate_type="lib"]
-#![feature(globs)]
-#![allow(visible_private_types)]
-
-extern crate native;
-extern crate libc;
-extern crate sync;
-
 use std::comm::Messages;
 use std::mem;
 use std::mem::{size_of, to_be16, from_be16};
@@ -21,12 +12,14 @@ use libc::{socket, setsockopt, fcntl, close, bind, sendto, recvfrom, shutdown};
 use libc::{SOCK_DGRAM, SOCK_STREAM, AF_INET, AF_INET6, IPPROTO_TCP};
 use libc::consts::os::bsd44::{SHUT_RD};
 
+use net::{IpFamily, IPv4, IPv6};
+use native;
 use native::io::net::{sock_t};
 
-use select::FdSet;
+use self::select::FdSet;
 
-pub use options_int::options;
-use options::{SocketOption};
+pub use self::options_int::options;
+use self::options::{SocketOption};
 
 pub mod select;
 mod options_int;
@@ -37,34 +30,6 @@ pub mod consts {
     pub static IPPROTO_UDP: c_int = 17;
     pub static F_SETFL:     c_int = 4;
     pub static O_NONBLOCK:  c_int = 0o4000;
-}
-
-pub enum IpFamily {
-    Ipv4,
-    Ipv6,
-}
-
-impl IpFamily {
-    fn to_c_int(&self) -> c_int {
-        match *self {
-            Ipv4 => AF_INET,
-            Ipv6 => AF_INET6,
-        }
-    }
-
-    pub fn is_ipv6(&self) -> bool {
-        match *self {
-            Ipv4 => false,
-            Ipv6 => true,
-        }
-    }
-
-    pub fn from_addr(addr: SocketAddr) -> IpFamily {
-        match addr.ip {
-            Ipv4Addr(..) => Ipv4,
-            _ => Ipv6,
-        }
-    }
 }
 
 enum SockAddr {

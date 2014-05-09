@@ -11,15 +11,20 @@
 //! - Receiver
 //! ```
 
+use crypt;
 use crypt::{PrecomputedKey, Key, Nonce, NONCE};
-use std::io::{MemWriter, MemReader, IoResult, standard_error, OtherIoError};
+use std::io::{MemWriter, MemReader, BufReader, IoResult, standard_error, OtherIoError};
 use std::io::net::ip::{SocketAddr};
+use std::{mem};
+use utils;
 use utils::{StructWriter, StructReader, CryptoWriter, FiniteReader, SlicableReader,
             Writable, other_error};
-use sockets::{UdpWriter};
+use net::sockets::{UdpWriter};
 use keylocker::{Keylocker};
 use onion::consts::{LEVEL0_RESPONSE, LEVEL1_RESPONSE, LEVEL2_RESPONSE,
-                    LEVEL0_SEND, LEVEL1_SEND, LEVEL2_SEND};
+                    LEVEL0_SEND, LEVEL1_SEND, LEVEL2_SEND, ONION_FORWARDED,
+                    META_RESPONSE};
+use onion::client::{OnionPath};
 
 /// Size of return data stored by Level 0. 
 static LEVEL0_PRIVATE: uint = 64u;
@@ -29,17 +34,6 @@ static LEVEL1_PRIVATE: uint = 2u * LEVEL0_PRIVATE;
 static LEVEL2_PRIVATE: uint = 3u * LEVEL0_PRIVATE;
 /// TODO
 static PING_ID_TIMEOUT: u64 = 20;
-
-/// A node in the onion network.
-pub struct OnionNode {
-    /// Our public key generated specifically for this node.
-    public: Key,
-    /// The key precomputed from the peer's public key and the private key which
-    /// corresponds to the public key above.
-    encoder: PrecomputedKey,
-    /// The address of the node.
-    addr: SocketAddr,
-}
 
 /// Client to whom we have an onion path.
 struct Contact {
@@ -53,6 +47,13 @@ struct Contact {
     timestamp: u64,
 }
 
+impl Contact {
+    fn new() -> Contact {
+        // Maybe use uninit?
+        unsafe { mem::init() }
+    }
+}
+
 /// The object running the onion layer.
 pub struct Onion {
     udp:       UdpWriter,
@@ -60,7 +61,6 @@ pub struct Onion {
     symmetric: Key,
     contacts:  Vec<Contact>,
     secret_bytes: [u8, ..32],
-    locker: Keylocker,
 }
 
 impl Onion {
@@ -80,9 +80,8 @@ impl Onion {
             let mut packet = MemWriter::new();
             try!(packet.write_u8(LEVEL2_RESPONSE));
             try!(packet.write(contact.private));
-            try!(packet.write(raw));
-            try!(raw.write_u8(ONION_FORWARDED));
-            try!(raw.write(data.slice_to_end().initn(LEVEL2_PRIVATE)));
+            try!(packet.write_u8(ONION_FORWARDED));
+            try!(packet.write(data.slice_to_end().initn(LEVEL2_PRIVATE)));
             packet.unwrap()
         };
         self.udp.send_to(contact.addr, packet)
@@ -99,7 +98,7 @@ impl Onion {
         crypt::hash(data.get_ref())
     }
 
-    fn precomputed(&'a mut self, key: &Key) -> &'a PrecomputedKey {
+    fn precomputed<'a>(&'a mut self, key: &Key) -> &'a PrecomputedKey {
         self.locker.get(key)
     }
 
@@ -123,7 +122,7 @@ impl Onion {
                 }
                 let data = BufReader::new(data.slice_to_end().initn(LEVEL2_PRIVATE));
                 let plain = try!(data.read_encrypted(&our_key.with_nonce(&nonce)));
-                let private = data.slice_to_end().lastn(PRIVATE_DATA_LEN);
+                let private = data.slice_to_end().lastn(LEVEL2_PRIVATE);
                 (MemReader::new(plain), private)
             };
             let ping_id = try!(plain.read_exact(32));
@@ -134,7 +133,7 @@ impl Onion {
             // small, I guess this is ok. Maybe, once the size of send_back is fixed, we
             // can turn this into a stack allocation.
             let send_back = plain.slice_to_end().to_owned();
-            (our_key, their_key, return_path, ping_id, requested_id, data_key, send_back)
+            (our_key, their_key, private, ping_id, requested_id, data_key, send_back)
         };
 
         let (ping1, ping2) = {
@@ -161,7 +160,7 @@ impl Onion {
                 },
                 _ => {
                     self.contacts.push(Contact::new());
-                    Soem(self.contacts.len()-1)
+                    Some(self.contacts.len()-1)
                 },
             };
             // If we have a reserved position in the contacts list, we update it with the
@@ -169,14 +168,14 @@ impl Onion {
             match pos {
                 Some(p) => {
                     {
-                        let c = &self.contacts[p];
+                        let c = self.contacts.get(p);
                         c.id        = id;
                         c.addr      = source;
                         c.private   = return_path.to_owned();
                         c.data_key  = data_key;
                         c.timestamp = utils::time::sec();
                     }
-                    self.contact.sort_by(|e1, e2| {
+                    self.contacts.sort_by(|e1, e2| {
                         match (e1.timed_out(), e2.timed_out()) {
                             (true,  true)  => Equal,
                             (false, true)  => Greater,
@@ -210,7 +209,7 @@ impl Onion {
             // requested id.
             let (is_data_key, val) = match index {
                 None    => (0, ping2),
-                Some(i) => (1, entry.data_key.as_slice()),
+                Some(i) => (1, self.contacts.get(i).data_key.as_slice()),
             };
             try!(encrypted.write_u8(is_data_key));
             try!(encrypted.write(val));
@@ -223,7 +222,7 @@ impl Onion {
             let mut packet = MemWriter::new();
             try!(packet.write_u8(LEVEL2_RESPONSE));
             try!(packet.write(return_path));
-            try!(packet.write_u8(ANNOUNCE_RESPONSE));
+            try!(packet.write_u8(META_RESPONSE));
             try!(packet.write(send_back));
             try!(packet.write_struct(&nonce));
             try!(packet.write_encrypted(&our_key.with_nonce(&nonce)));
@@ -273,7 +272,7 @@ impl Onion {
             try!(packet.write_struct(&nonce));
             try!(packet.write_struct(&path.nodes[0].public));
             try!(packet.write_encrypted(&path.nodes[0].encoder.with_nonce(&nonce),
-                                        level_0.get_ref()));
+                                        level0.get_ref()));
             packet.unwrap()
         };
 
@@ -453,4 +452,9 @@ impl Onion {
         self.udp.send_to(dest, data.slice_to_end());
         Ok(())
     }
+}
+
+pub struct PipeControl;
+
+impl PipeControl {
 }

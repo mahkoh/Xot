@@ -1,12 +1,27 @@
 use std::io::net::ip::{SocketAddr};
-use std::io::{MemWriter, MemReader};
+use std::io::{MemWriter, MemReader, BufReader, IoResult};
 use crypt::{Key, Nonce};
+use net::{Node, IpFamily, IPv4, IPv6};
+use utils;
+use utils::{other_error};
+use rand::{task_rng};
+use std::{mem};
+
+static MAX_SENT_NODES: uint = 4;
+static GET_NODES_TIMEOUT: u64 = 3;
+static BAD_NODE_TIMEOUT: u64 = 122;
+static GET_NODE_INTERVAL: u64 = 20;
+static KILL_NODE_TIMEOUT: u64 = 300;
+static PING_INTERVAL: u64 = 60;
+
+pub static SEND_NODES4: u8 = 3;
+pub static SEND_NODES6: u8 = 4;
 
 struct DHT;
 
 impl DHT {
-    fn get_nodes(&mut self, addr: SocketAddr, id: &ClientId, req_id: &ClientId,
-                 sendback: Option<&Node>) -> IoResult {
+    fn get_nodes(&mut self, addr: SocketAddr, id: &Key, req_id: &Key,
+                 sendback: Option<&Node>) -> IoResult<()> {
         if id == self.id {
             other_error();
         }
@@ -18,7 +33,7 @@ impl DHT {
         try!(private.write_struct(&Node { id: id, addr: addr }));
         match sendback {
             Some(n) => try!(private.write_struct(n)),
-            None    => try!(private.write(Node::encoded_empty())),
+            None    => try!(private.write_struct(&Node::new())),
         };
 
         let encrypted = MemWriter::new();
@@ -128,7 +143,8 @@ impl DHT {
         let private = MemReader::new(private);
 
         let time = try!(private.read_be_u64());
-        if get_node_timed_out(time) {
+        let now = utils::time::sec();
+        if time + GET_NODES_TIMEOUT < now || now < time {
             return other_error();
         }
         let send_to_node: Node = try!(private.read_struct());
@@ -155,14 +171,14 @@ impl DHT {
         let update_first = |mut_list| {
             for n in mut_list {
                 if sender == n.id {
-                    match node.ip.family() {
+                    match node.family() {
                         IPv4 => {
-                            close.assoc4.ret_addr = node.addr;
-                            close.assoc4.ret_time = utils::time::sec();
+                            n.assoc4.ret_addr = node.addr;
+                            n.assoc4.ret_time = utils::time::sec();
                         },
                         IPv6 => {
-                            close.assoc6.ret_addr = node.addr;
-                            close.assoc6.ret_time = utils::time::sec();
+                            n.assoc6.ret_addr = node.addr;
+                            n.assoc6.ret_time = utils::time::sec();
                         }
                     }
                     return true;
@@ -373,7 +389,7 @@ impl ClientList {
     fn get_close_nodes(&self, close_to: &Key, req_addr: SocketAddr, only_hard: bool,
                        nodes: &mut Vec<Node>) {
         for cand in self.clients {
-            if nodes.contains(client.id) {
+            if nodes.contains(cand.id) {
                 continue;
             }
             let addr = if cand.assoc4.timestamp > cand.assoc6.timestamp {
@@ -438,7 +454,7 @@ impl ClientList {
             if !client.assoc4.is_kill() {
                 all_kill = false;
                 if client.assoc4.should_ping() {
-                    pinger.send_ping(client.assoc4.addr, client.id.clone());
+                    self.pinger.send_ping(client.assoc4.addr, client.id.clone());
                 }
                 if !client.assoc4.is_bad() {
                     possible.push((i, IPv4));
@@ -447,7 +463,7 @@ impl ClientList {
             if !client.assoc6.is_kill() {
                 all_kill = false;
                 if client.assoc6.should_ping() {
-                    pinger.send_ping(client.assoc6.addr, client.id.clone());
+                    self.pinger.send_ping(client.assoc6.addr, client.id.clone());
                 }
                 if !client.assoc6.is_bad() {
                     possible.push((i, IPv6));
@@ -480,13 +496,13 @@ impl Client {
             IPv4 => {
                 self.assoc4.addr = n.addr;
                 self.assoc4.timestamp = utils::time::sec();
-                self.assoc6.addr = TimedSocketAddr::zero();
+                self.assoc6.addr = TimedSocketAddr::new();
                 self.id = n.id.clone();
             },
             IPv6 => {
                 self.assoc6.addr = n.addr;
                 self.assoc6.timestamp = utils::time::sec();
-                self.assoc4.addr = TimedSocketAddr::zero();
+                self.assoc4.addr = TimedSocketAddr::new();
                 self.id = n.id.clone();
             }
         }
@@ -500,6 +516,10 @@ struct TimedSocketAddr {
 }
 
 impl TimedSocketAddr {
+    fn new() -> TimedSocketAddr {
+        unsafe { mem::init() }
+    }
+
     fn is_bad(&self) -> bool {
         self.timestamp + BAD_NODE_TIMEOUT < utils::time::sec()
     }
@@ -511,4 +531,9 @@ impl TimedSocketAddr {
     fn should_ping(&self) -> bool {
         self.last_pinged + PING_INTERVAL >= utils::time::sec()
     }
+}
+
+pub struct DHTControl;
+
+impl DHTControl {
 }

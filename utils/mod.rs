@@ -1,9 +1,9 @@
 use std::io::{IoResult, MemWriter, MemReader, BufReader, OtherIoError, standard_error,
               IoError, EndOfFile};
 use crypt::Machine;
-use time;
 
 pub mod ringbuffer;
+pub mod time;
 
 /// A trait for objects which can be writte via `writer.write_struct()`.
 pub trait Writable {
@@ -109,7 +109,7 @@ pub fn other_error<T>() -> IoResult<T> {
 
 /// Returns the current time in micro seconds.
 pub fn micro_time() -> u64 {
-    let now = time::get_time();
+    let now = time::sec();
     (now.sec as u64 * 1000000) + (now.nsec as u64 / 1000)
 }
 

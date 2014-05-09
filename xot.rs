@@ -5,8 +5,10 @@ use std::from_str::{FromStr};
 use time::Tm;
 use std::io::{IoResult, MemReader, MemWriter, standard_error, OtherIoError};
 use std::io::net::ip::{SocketAddr};
-use crypt::{Nonce, Key};
-use utils::{other_error};
+use crypt::{Nonce, Key, KEY};
+use utils::{other_error, parse_hex};
+use messenger::{MessengerControl, FriendStatus};
+use dht::{DHTControl};
 
 mod crypt;
 
@@ -21,64 +23,6 @@ static PORT_DEFAULT: uint = PORT_MIN;
 /////////////////////////////////////////////////
 // ClientAddr
 /////////////////////////////////////////////////
-
-pub struct ClientAddr {
-    id: ClientId,
-    nospam: [u8, ..2],
-}
-
-impl ClientAddr {
-    fn checksum(&self) -> [u8, ..2] {
-        let check = [0u8, 0u8];
-        let Key(ref key) = self.id;
-        for (i, x) in key.enumerate() {
-            check[i % 2] ^= x;
-        }
-        check[(crypt::KEY + 0) % 2] ^= self.nospam[0];
-        check[(crypt::KEY + 1) % 2] ^= self.nospam[1];
-        check
-    }
-}
-
-impl fmt::Show for ClientAddr {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        self.id.fmt(fmt);
-        try!(fmt.buf.write_str(format!("{:x}", self.nospam[0])));
-        try!(fmt.buf.write_str(format!("{:x}", self.nospam[1])));
-        let checksum = self.checksum();
-        try!(fmt.buf.write_str(format!("{:x}", checksum[0])));
-        try!(fmt.buf.write_str(format!("{:x}", checksum[1])));
-        Ok(())
-    }
-}
-
-impl FromStr for ClientAddr {
-    fn from_str(s: &str) -> Option<ClientAddr> {
-        if s.len() != 2 * (crypt::KEY + 2 + 2) {
-            return None;
-        }
-
-        let mut id     = [0u8, ..32];
-        let mut nospam = [0u8, ..2];
-        let mut check  = [0u8, ..2];
-
-        if parse_hex(s.slice(0, crypt::KEY), buf.as_mut_slice()).is_err() {
-            return None;
-        }
-        if parse_hex(s.slice(crypt::KEY, crypt::KEY+2), nospam.as_mut_slice()).is_err() {
-            return None;
-        }
-        if parse_hex(s.slice(crypt::KEY+2, crypt::KEY+4), check.as_mut_slice()).is_err() {
-            return None;
-        }
-
-        let addr = ClientAddr { id: Key(id), nospam: nospam };
-        if addr.checksum().as_slice() != checksum.as_slice() {
-            return None;
-        }
-        addr
-    }
-}
 
 /////////////////////////////////////////////////
 // ClientId
@@ -112,8 +56,8 @@ impl FromStr for ClientId {
 
 struct Friend {
     id:        ClientId,
-    messenger: MessengerControler,
-    dht:       DHTControler,
+    messenger: MessengerControl,
+    dht:       DHTControl,
 }
 
 impl<'a> Friend {

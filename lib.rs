@@ -7,7 +7,8 @@ extern crate libc;
 extern crate rand;
 extern crate native;
 extern crate time;
-extern crate sockets;
+extern crate collections;
+extern crate sync;
 
 pub mod crypt;
 pub mod utils;
@@ -15,5 +16,7 @@ pub mod net;
 pub mod ludp;
 pub mod onion;
 pub mod keylocker;
+pub mod messenger;
 pub mod ping;
+pub mod dht;
 pub mod xot;

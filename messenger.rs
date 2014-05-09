@@ -1,7 +1,13 @@
-use std::io::{IoResult};
-use utils::{other_error};
+use std::io::{IoResult, MemWriter, MemReader};
+use std::str::{from_utf8};
+use time::{Timespec};
+use utils;
+use utils::{other_error, parse_hex};
 use collections::hashmap::{HashMap};
-use std::hash::sip::{SipHasher};
+use crypt;
+use crypt::{Key};
+use std::{fmt, mem};
+use std::from_str::{FromStr};
 
 static ACTION:            u8 = 63;
 static FILE_CONTROL:      u8 = 81;
@@ -18,6 +24,64 @@ static STATUS_MESSAGE:    u8 = 49;
 static TYPING:            u8 = 51;
 static USER_STATUS:       u8 = 50;
 
+pub struct ClientAddr {
+    id: Key,
+    nospam: [u8, ..2],
+}
+
+impl ClientAddr {
+    fn checksum(&self) -> [u8, ..2] {
+        let check = [0u8, 0u8];
+        let Key(ref key) = self.id;
+        for (i, x) in key.enumerate() {
+            check[i % 2] ^= x;
+        }
+        check[(crypt::KEY + 0) % 2] ^= self.nospam[0];
+        check[(crypt::KEY + 1) % 2] ^= self.nospam[1];
+        check
+    }
+}
+
+impl fmt::Show for ClientAddr {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        self.id.fmt(fmt);
+        try!(fmt.buf.write_str(format!("{:x}", self.nospam[0])));
+        try!(fmt.buf.write_str(format!("{:x}", self.nospam[1])));
+        let checksum = self.checksum();
+        try!(fmt.buf.write_str(format!("{:x}", checksum[0])));
+        try!(fmt.buf.write_str(format!("{:x}", checksum[1])));
+        Ok(())
+    }
+}
+
+impl FromStr for ClientAddr {
+    fn from_str(s: &str) -> Option<ClientAddr> {
+        if s.len() != 2 * (crypt::KEY + 2 + 2) {
+            return None;
+        }
+
+        let mut id     = [0u8, ..32];
+        let mut nospam = [0u8, ..2];
+        let mut check  = [0u8, ..2];
+
+        if parse_hex(s.slice(0, crypt::KEY), id.as_mut_slice()).is_err() {
+            return None;
+        }
+        if parse_hex(s.slice(crypt::KEY, crypt::KEY+2), nospam.as_mut_slice()).is_err() {
+            return None;
+        }
+        if parse_hex(s.slice(crypt::KEY+2, crypt::KEY+4), check.as_mut_slice()).is_err() {
+            return None;
+        }
+
+        let addr = ClientAddr { id: Key(id), nospam: nospam };
+        if addr.checksum().as_slice() != check.as_slice() {
+            return None;
+        }
+        addr
+    }
+}
+
 enum UserStatus {
     NoStatus = 0,
     Away     = 1,
@@ -25,7 +89,7 @@ enum UserStatus {
 }
 
 impl UserStatus {
-    fn from_u8(v: u8) -> Result<UserStatus, IoError> {
+    fn from_u8(v: u8) -> IoResult<UserStatus> {
         match v {
             0 => Ok(NoStatus),
             1 => Ok(Away),
@@ -35,7 +99,7 @@ impl UserStatus {
     }
 }
 
-enum FriendStatus {
+pub enum FriendStatus {
     Requested,
     Offline,
     Online,
@@ -69,7 +133,7 @@ impl<'a> Client<'a> {
         self.raw.nick = nick;
     }
 
-    fn last_online(&self) -> Timespan {
+    fn last_online(&self) -> Timespec {
         self.raw.last_ping
     }
 
@@ -86,7 +150,7 @@ impl<'a> Client<'a> {
     }
 
     fn handle_ping(&self) -> IoResult<()> {
-        self.raw.last_ping = get_time().sec;
+        self.raw.last_ping = utils::time::sec();
     }
 
     fn handle_nick(&self, mut data: MemReader) -> IoResult<()> {
@@ -114,7 +178,7 @@ impl<'a> Client<'a> {
 
     fn ping(&self) -> IoResult<()> {
         self.crypto.send_packet(self.addr.clone, vec!(PING));
-        self.raw.last_ping = get_time().sec;
+        self.raw.last_ping = utils::time::sec();
         Ok(())
     }
 
@@ -181,7 +245,7 @@ struct RawClient {
     typing:          bool,
     request_timeout: i64,
     request_last:    i64,
-    last_ping:       Timespan,
+    last_ping:       Timespec,
     status:          FriendStatus,
     msg_id:          u32,
     send_receipts:   bool,
@@ -189,7 +253,7 @@ struct RawClient {
 
 struct Messenger {
     addr: ClientAddr,
-    friends: HashMap<ClientId, Client, SipHasher>,
+    friends: HashMap<Key, RawClient>,
 }
 
 impl Messenger {
@@ -211,7 +275,7 @@ impl Messenger {
         if self.friends.contains_key(&addr.id) {
             return other_error();
         }
-        self.friends.insert(Client::new_confirmed(addr));
+        self.friends.insert(&addr.id, unsafe { mem::init() });
         self.onion.add_friend(addr.id.clone());
         Ok(())
     }
@@ -263,4 +327,9 @@ impl Messenger {
             self.crypto.send_packet(addr.clone(), packet.clone());
         }
     }
+}
+
+pub struct MessengerControl;
+
+impl MessengerControl {
 }

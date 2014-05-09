@@ -6,18 +6,17 @@ use std::io::timer::{Timer};
 use crypt::{Nonce, Key, PrecomputedKey};
 use net::{LLRcv, LLSnd};
 use net::consts::{PING_REQUEST, PING_RESPONSE};
+use utils;
 use utils::{other_error, StructReader, StructWriter, CryptoReader, CryptoWriter};
 use utils::ringbuffer::{RingBuffer};
-use sockets::{UdpWriter};
-use time::{get_time};
+use net::sockets::{UdpWriter};
 use keylocker::{Keylocker};
-use xot::{ClientId};
 use rand::{task_rng, Rng};
 
 /// Maximum number of peers whose pongs we're waiting for.
-static MAX_PINING:   uint = 512;
+static MAX_PINING: uint = 512;
 /// Maximum number of peers we send a ping to every `TIME_TO_PING` seconds.
-static MAX_TO_PING:  uint = 16;
+static MAX_TO_PING: uint = 16;
 /// How long we wait between pings.
 static TIME_TO_PING: u64 = 5;
 /// Time before a ping request is considered timed out.
@@ -28,7 +27,7 @@ struct Ping {
     /// Adderss of the peer we're pinging.
     addr: SocketAddr,
     /// Time when we sent the ping.
-    time: i64,
+    time: u64,
     /// Secret ping id we sent with the ping.
     id: u64,
 }
@@ -36,7 +35,7 @@ struct Ping {
 impl Ping {
     /// Check if the ping request has timed out.
     fn timed_out(&self) -> bool {
-        self.time + PING_TIMEOUT < get_time().sec
+        self.time + PING_TIMEOUT < utils::time::sec()
     }
 }
 
@@ -45,14 +44,15 @@ struct Pinger {
     udp: UdpWriter,
     locker: Keylocker,
     /// List of peers we've to ping during the next interval.
-    to_ping: [Option<(SocketAddr, ClientId)>, ..MAX_TO_PING],
+    to_ping: [Option<(SocketAddr, Key)>, ..MAX_TO_PING],
     /// List of pings we've sent.
     pinging: RingBuffer<Ping>,
     /// The public key we're signing our pings with.
-    public: ClientId,
+    public: Key,
 }
 
 impl Pinger {
+    /*
     /// The main loop.
     /// 
     /// Checks for incoming pings and pongs, and pings the peers regularly.
@@ -68,6 +68,7 @@ impl Pinger {
             );
         }
     }
+    */
 
     /// Get a precomputed key from the locker.
     fn precomputed<'b>(&'b mut self, public: &Key) -> &'b PrecomputedKey {
@@ -75,7 +76,7 @@ impl Pinger {
     }
 
     /// Add a peer to the to-be-pinged list if it's closer than the other ones.
-    fn add_to_ping(&mut self, addr: SocketAddr, id: &ClientId) {
+    fn add_to_ping(&mut self, addr: SocketAddr, id: &Key) {
         for ping in self.to_ping.as_mut_slice().mut_iter() {
             if ping.is_none() {
                 *ping = Some((addr, id.clone()));
@@ -122,7 +123,7 @@ impl Pinger {
         self.remove_timeouts();
         self.pinging.push(Ping {
             addr: addr,
-            time: get_time().sec,
+            time: utils::time::sec(),
             id: ping_id,
         });
     }

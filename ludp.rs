@@ -8,7 +8,7 @@ use std::mem::{to_be16};
 use std::cast::{transmute};
 use std::{u64};
 use rand::{task_rng, Rng};
-use sockets::{UdpWriter};
+use net::sockets::{UdpWriter};
 
 static DEFAULT_QUEUE_LEN: uint = 4;
 static MAX_QUEUE_LEN:     uint = 1024;
