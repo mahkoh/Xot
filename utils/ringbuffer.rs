@@ -28,7 +28,7 @@ impl<'a, T> RingBuffer<T> {
     }
 
     pub fn len(&self) -> uint {
-        self.len;
+        self.len
     }
 
     pub fn cap(&self) -> uint {

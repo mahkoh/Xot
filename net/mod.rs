@@ -1,19 +1,19 @@
 use std::io::net::ip::{Ipv4Addr, Ipv6Addr, SocketAddr, IpAddr};
-use std::io::{MemReader, IoResult, standard_error, OtherIoError};
+use std::io::{MemReader, IoResult, standard_error, OtherIoError, EndOfFile};
 use utils::{Writable, Readable, StructReader, StructWriter, other_error};
 use utils::bufreader::{BufReader};
 use libc::{AF_INET, AF_INET6, c_int};
 use net::sockets::{UdpWriter, UdpReader};
 use crypt::{Key};
 use std::{mem};
-use std::mem::{to_be16};
+use std::mem::{to_be16, from_be16};
 use std::cast::{transmute};
 
 pub mod sockets;
 
 pub struct Node {
-    id: Key,
-    addr: SocketAddr,
+    pub id: Key,
+    pub addr: SocketAddr,
 }
 
 impl Node {
@@ -98,9 +98,65 @@ impl Readable for Vec<Node> {
     }
 }
 
+struct Ipv4Nodes<'a> {
+    nodes: &'a Vec<Node>
+}
+
+impl<'a> Writable for Ipv4Nodes<'a> {
+    fn write_to(&self, w: &mut Writer) -> IoResult<()> {
+        for node in self.nodes.iter() {
+            match node.addr.ip {
+                Ipv4Addr(a, b, c, d) => {
+                    try!(w.write_struct(&node.id));
+                    try!(w.write_u8(a));
+                    try!(w.write_u8(b));
+                    try!(w.write_u8(c));
+                    try!(w.write_u8(d));
+                    try!(w.write_be_u16(node.addr.port));
+                    try!(w.write([0u8, 0u8]));
+                },
+                _ => { }
+            }
+        }
+        Ok(())
+    }
+}
+
+struct Ipv6Nodes<'a> {
+    nodes: &'a Vec<Node>
+}
+
+impl<'a> Writable for Ipv6Nodes<'a> {
+    fn write_to(&self, w: &mut Writer) -> IoResult<()> {
+        for node in self.nodes.iter() {
+            match node.addr.ip {
+                Ipv6Addr(..) => try!(w.write_struct(node)),
+                _ => { }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub trait ToIpvNNodes {
+    fn ipv4<'a>(&'a self) -> Ipv4Nodes<'a>;
+    fn ipv6<'a>(&'a self) -> Ipv6Nodes<'a>;
+}
+
+impl ToIpvNNodes for Vec<Node> {
+    fn ipv4<'a>(&'a self) -> Ipv4Nodes<'a> {
+        Ipv4Nodes { nodes: self }
+    }
+    fn ipv6<'a>(&'a self) -> Ipv6Nodes<'a> {
+        Ipv6Nodes { nodes: self }
+    }
+}
+
 pub trait IpAddrInfo {
     fn is_lan(self) -> bool;
     fn is_ipv4(self) -> bool;
+    fn is_zero(self) -> bool;
+    fn is_broadcast(self) -> bool;
 }
 
 impl IpAddrInfo for IpAddr {
@@ -113,6 +169,7 @@ impl IpAddrInfo for IpAddr {
                     192      => b == 168,
                     169      => b == 254 && 0 < c && c < 255,
                     100      => b & 0xC0 == 0x40,
+                    _        => false
                 }
             },
             Ipv6Addr(a, b, c, d, e, f, g, h) => {
@@ -143,8 +200,28 @@ impl IpAddrInfo for IpAddr {
                 a == 0 && b == 0 && c == 0 && d == 0 && e == 0 && f == 0xFFFF,
         }
     }
+
+    fn is_zero(self) -> bool {
+        match self {
+            Ipv4Addr(a, b, c, d) => a == 0 && b == 0 && c == 0 && d == 0,
+            Ipv6Addr(a, b, c, d, e, f, g, h) =>
+                a == 0 && b == 0 && c == 0 && d == 0 && e == 0 && f == 0 && h == 0,
+        }
+    }
+
+    fn is_broadcast(self) -> bool {
+        // TODO this is most likely wrong
+        match self {
+            Ipv4Addr(a, b, c, d) => a == 255 && b == 255 && c == 255 && d == 255,
+            Ipv6Addr(a, b, c, d, e, f, g, h) =>
+                // all nodes multicast
+                a == from_be16(0xFF02) && b == 0 && c == 0 && d == 0 && e == 0 &&
+                    f == 0 && g == 0 && h == from_be16(0x0001),
+        }
+    }
 }
 
+#[deriving(Clone)]
 pub enum IpFamily {
     IPv4,
     IPv6,

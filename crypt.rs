@@ -7,6 +7,8 @@ use rand::{Rng};
 use rand::os::{OSRng};
 use std::mem;
 use std::io::{IoResult, MemWriter, standard_error, OtherIoError};
+use std::hash::{Hash};
+use std::hash::sip::{SipState};
 use utils::{Readable, Writable};
 use std::num::{abs};
 use std::intrinsics::{volatile_set_memory};
@@ -205,6 +207,13 @@ impl Eq for Key {
 }
 
 impl TotalEq for Key { }
+
+impl Hash for Key {
+    fn hash(&self, state: &mut SipState) {
+        let &Key(ref key) = self;
+        key.as_slice().hash(state);
+    }
+}
 
 /// Key that must not be swapped to disk and has to be securely erased.
 pub struct SecretKey {

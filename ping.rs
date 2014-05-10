@@ -20,7 +20,7 @@ static MAX_TO_PING: uint = 16;
 /// How long we wait between pings.
 static TIME_TO_PING: u64 = 5;
 /// Time before a ping request is considered timed out.
-static PING_TIMEOUT: i64  = 3;
+static PING_TIMEOUT: u64  = 3;
 
 /// An object which represents a ping request.
 struct Ping {
@@ -79,7 +79,7 @@ impl Pinger {
     fn add_to_ping(&mut self, addr: SocketAddr, id: &Key) {
         for ping in self.to_ping.as_mut_slice().mut_iter() {
             if ping.is_none() {
-                *ping = Some((addr, id.clone()));
+                *ping = Some((addr, *id));
                 return;
             }
         }
@@ -87,7 +87,7 @@ impl Pinger {
             let &(ref mut refaddr, ref mut refid) = ping.as_mut().unwrap();
             if self.public.cmp(id, refid) == Less {
                 *refaddr = addr;
-                *refid = id.clone();
+                *refid = *id;
                 return;
             }
         }
@@ -131,8 +131,8 @@ impl Pinger {
     /// Pings all elements in `to_ping` and clears `to_ping` afterwards.
     fn ping(&mut self) {
         for i in range(0, MAX_TO_PING) {
-            let (addr, id) = match self.to_ping[i] {
-                Some(ref x) => x.clone(),
+            let &(addr, id) = match self.to_ping[i] {
+                Some(ref x) => x,
                 None => continue,
             };
             self.to_ping[i] = None;
@@ -197,5 +197,16 @@ impl Pinger {
         }
         // self.add_to_dht(addr, id);
         Ok(())
+    }
+}
+
+pub struct PingControl;
+
+impl PingControl {
+    pub fn add(&self, addr: SocketAddr, id: &Key) {
+        unreachable!();
+    }
+    pub fn send_ping(&self, addr: SocketAddr, id: &Key) {
+        unreachable!();
     }
 }

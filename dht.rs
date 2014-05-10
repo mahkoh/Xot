@@ -1,12 +1,18 @@
-use std::io::net::ip::{SocketAddr};
+use std::io::net::ip::{SocketAddr, Ipv4Addr, Ipv6Addr};
 use std::io::{MemWriter, MemReader, IoResult};
-use crypt::{Key, Nonce};
-use net::{Node, IpFamily, IPv4, IPv6};
+use crypt::{Key, Nonce, SecretKey, PrecomputedKey};
+use net::{Node, IpFamily, IPv4, IPv6, IpAddrInfo, ToIpvNNodes};
+use net::sockets::{UdpWriter};
 use utils;
-use utils::{other_error};
+use utils::{other_error, StructWriter, CryptoWriter, StructReader, CryptoReader,
+            SlicableReader};
 use utils::bufreader::{BufReader};
-use rand::{task_rng};
+use rand::{task_rng, Rng};
 use std::{mem};
+use std::slice::{MutItems};
+use keylocker::{Keylocker};
+use collections::hashmap::{HashMap};
+use ping::{PingControl};
 
 static MAX_SENT_NODES: uint = 4;
 static GET_NODES_TIMEOUT: u64 = 3;
@@ -18,20 +24,37 @@ static PING_INTERVAL: u64 = 60;
 pub static SEND_NODES4: u8 = 3;
 pub static SEND_NODES6: u8 = 4;
 
-struct DHT;
+struct Friend {
+    id: Key,
+    clients: ClientList,
+}
+
+struct DHT {
+    public: Key,
+    symmetric: Key,
+    locker: Keylocker,
+    udp: UdpWriter,
+    close: ClientList,
+    friends: HashMap<Key, Friend>,
+    pinger: PingControl,
+}
 
 impl DHT {
-    fn get_nodes(&mut self, addr: SocketAddr, id: &Key, req_id: &Key,
+    fn precomputed<'a>(&'a mut self, public: &Key) -> &'a PrecomputedKey {
+        self.locker.get(public)
+    }
+
+    fn get_nodes(&self, addr: SocketAddr, id: &Key, req_id: &Key,
                  sendback: Option<&Node>) -> IoResult<()> {
-        if id == self.id {
-            other_error();
+        if *id == self.public {
+            return other_error();
         }
 
         let nonce = Nonce::random();
 
         let private = MemWriter::new();
         try!(private.write_be_u64(utils::time::sec()));
-        try!(private.write_struct(&Node { id: id, addr: addr }));
+        try!(private.write_struct(&Node { id: *id, addr: addr }));
         match sendback {
             Some(n) => try!(private.write_struct(n)),
             None    => try!(private.write_struct(&Node::new())),
@@ -40,24 +63,25 @@ impl DHT {
         let encrypted = MemWriter::new();
         try!(encrypted.write_struct(req_id));
         try!(encrypted.write_struct(&nonce));
-        try!(encrypted.write_encrypted(self.symmetric.with_nonce(&nonce),
+        try!(encrypted.write_encrypted(&self.symmetric.with_nonce(&nonce),
                                        private.get_ref()));
 
         let packet = MemWriter::new();
         try!(packet.write_u8(2));
         try!(packet.write_struct(&self.public));
         try!(packet.write_struct(&nonce));
-        try!(packet.write_encrypted(self.precomputed(&id).with_nonce(&nonce),
+        try!(packet.write_encrypted(&self.precomputed(id).with_nonce(&nonce),
                                     encrypted.get_ref()));
 
         self.udp.send_to(addr, packet.get_ref());
+        Ok(())
     }
 
     fn get_close_nodes(&self, close_to: &Key, lan_ok: bool,
                        only_hard: bool) -> Vec<Node> {
         let mut close_nodes = Vec::with_capacity(MAX_SENT_NODES);
         self.close.get_close_nodes(close_to, lan_ok, only_hard, &mut close_nodes);
-        for friend in self.friends.iter() {
+        for friend in self.friends.values() {
             // hardening is not implemented for friends
             friend.clients.get_close_nodes(close_to, lan_ok, false, &mut close_nodes);
         }
@@ -74,7 +98,9 @@ impl DHT {
         let mut data = MemReader::new(data);
 
         let req_key: Key = try!(data.read_struct());
-        let close = self.get_close_nodes(&req_key, addr);
+        let lan_ok = addr.ip.is_lan();
+        let only_hard = true;
+        let close = self.get_close_nodes(&req_key, lan_ok, only_hard);
 
         // IPv4:
 
@@ -87,7 +113,7 @@ impl DHT {
         try!(packet.write_u8(SEND_NODES4));
         try!(packet.write_struct(&self.public));
         try!(packet.write_struct(&nonce));
-        try!(packet.write_encrypted(our_key.with_nonce(&nonce), encrypted.get_ref()));
+        try!(packet.write_encrypted(&our_key.with_nonce(&nonce), encrypted.get_ref()));
 
         self.udp.send_to(addr, packet.get_ref());
 
@@ -102,11 +128,11 @@ impl DHT {
         try!(packet.write_u8(SEND_NODES6));
         try!(packet.write_struct(&self.public));
         try!(packet.write_struct(&nonce));
-        try!(packet.write_encrypted(our_key.with_nonce(&nonce), encrypted.get_ref()));
+        try!(packet.write_encrypted(&our_key.with_nonce(&nonce), encrypted.get_ref()));
 
         self.udp.send_to(addr, packet.get_ref());
 
-        self.pinger.add(addr, their_key.clone());
+        self.pinger.add(addr, &their_key);
         Ok(())
     }
 
@@ -140,7 +166,7 @@ impl DHT {
         let private = BufReader::new(data.slice(data.len()-160, data.len()));
         let private_nonce: Nonce = try!(private.read_struct());
         let private =
-            try!(private.read_encrypted(self.symmetric.with_nonce(&private_nonce)));
+            try!(private.read_encrypted(&self.symmetric.with_nonce(&private_nonce)));
         let private = MemReader::new(private);
 
         let time = try!(private.read_be_u64());
@@ -150,28 +176,33 @@ impl DHT {
         }
         let send_to_node: Node = try!(private.read_struct());
         let send_back_node: Node = try!(private.read_struct());
-        if send_to_node.ip != addr || send_to_node.id != their_key {
+        if send_to_node.addr != addr || send_to_node.id != their_key {
             return other_error();
         }
 
         for node in nodes.iter() {
-            if !node.ip.is_zero() && !node.id.is_broadcast() {
-                self.pinger.ping(node.ip, node.id);
+            if !node.addr.ip.is_zero() && !node.addr.ip.is_broadcast() {
+                self.pinger.add(node.addr, &node.id);
                 self.returned_node(node, &their_key);
             }
         }
 
-        if !send_back_node.ip.is_zero() {
-            self.send_hardening_getnode_reps(send_back_node, their_key, nodes);
+        if !send_back_node.addr.ip.is_zero() {
+            self.send_hardening_getnode_reps(&send_back_node, &their_key, nodes);
         }
 
-        self.add_to_lists(addr, their_key);
+        self.add_to_lists(&Node { addr: addr, id: their_key });
+        Ok(())
     }
 
-    fn returned_node(&mut self, node: Node, sender: Key) {
-        let update_first = |mut_list| {
+    fn send_hardening_getnode_reps(&self, n: &Node, k: &Key, n: Vec<Node>) {
+        unreachable!();
+    }
+
+    fn returned_node(&mut self, node: &Node, sender: &Key) {
+        let update_first = |mut_list: MutItems<Client>| {
             for n in mut_list {
-                if sender == n.id {
+                if *sender == n.id {
                     match node.family() {
                         IPv4 => {
                             n.assoc4.ret_addr = node.addr;
@@ -190,7 +221,7 @@ impl DHT {
         if node.id == self.public {
             update_first(self.close.mut_iter());
         } else {
-            for friend in self.friends.mut_iter() {
+            for (_, friend) in self.friends.mut_iter() {
                 if friend.id == node.id {
                     if update_first(friend.clients.mut_iter()) {
                         return;
@@ -200,33 +231,37 @@ impl DHT {
         }
     }
 
-    fn add_to_lists(&mut self, node: Node) {
-        let replace = |mut_list| {
-            if !mut_list.contains(&node) {
-                if !mut_list.replace_bad(&node, &self.public) {
-                    if !mut_list.repcale_possibly_bad(&node, &self.public) {
-                        mut_list.replace_good(&node, &self.public);
+    fn add_to_lists(&mut self, node: &Node) {
+        let replace = |mut_list: &mut ClientList| {
+            if !mut_list.contains(&node.id) {
+                if !mut_list.replace_bad(node) {
+                    if !mut_list.replace_possibly_bad(node, &self.public) {
+                        mut_list.replace_good(node, &self.public);
                     }
                 }
             }
         };
         replace(&mut self.close);
-        for friend in self.friends.mut_iter() {
-            replace(friend);
+        for (_, friend) in self.friends.mut_iter() {
+            replace(&mut friend.clients);
         }
     }
 
     fn add_friend(&mut self, id: &Key) {
-        self.friends.add(id);
+        let friend = Friend {
+            id: *id,
+            clients: ClientList::new(),
+        };
+        self.friends.insert(*id, friend);
     }
 
     fn del_friend(&mut self, id: &Key) {
-        self.friends.del(id);
+        self.friends.remove(id);
     }
 
     fn get_friend_addr(&self, id: &Key) -> Option<SocketAddr> {
-        for friend in self.friends.iter() {
-            if friend.id == id {
+        for friend in self.friends.values() {
+            if friend.id == *id {
                 return friend.clients.get_addr(id);
             }
         }
@@ -234,18 +269,22 @@ impl DHT {
     }
 
     fn do_friends(&mut self) {
-        for i in range(0, self.friends.len()) {
-            match self.friends[i].do_ping_and_sendnode_requests() {
-                Ok(n) => self.get_nodes(&n, &self.friends[i].id, None),
+        let pairs = Vec::new();
+        for (_, friend) in self.friends.mut_iter() {
+            match friend.clients.do_ping_and_sendnode_requests(&self.pinger) {
+                Ok(n) => pairs.push((n, friend.id)),
                 Err(..) => { }
             }
+        }
+        for &(n, id) in pairs.iter() {
+            self.get_nodes(n.addr, &n.id, &id, None);
         }
     }
 
     fn do_close(&mut self) {
-        match self.close.do_ping_and_sendnode_requests() {
+        match self.close.do_ping_and_sendnode_requests(&self.pinger) {
             Ok(n) => {
-                self.get_nodes(&n, &self.public, None);
+                self.get_nodes(n.addr, &n.id, &self.public, None);
                 return;
             },
             Err(false) => return,
@@ -255,19 +294,19 @@ impl DHT {
         // All close clients are kill. Reset them to bad so that we have someone to talk
         // to.
         let time = utils::time::sec() - BAD_NODE_TIMEOUT;
-        for client in self.clients.mut_iter() {
+        for client in self.close.mut_iter() {
             client.assoc4.timestamp = time;
             client.assoc6.timestamp = time;
         }
     }
 
     fn route_to_close(&self, to: &Key, packet: &[u8]) -> bool {
-        for client in self.close.iter() {
-            if client.id == to {
-                if client.assoc6.addr.valid() {
+        for client in self.close.mut_iter() {
+            if client.id == *to {
+                if !client.assoc6.addr.ip.is_zero() {
                     self.udp.send_to(client.assoc6.addr, packet);
                     return true;
-                } else if client.assoc4.addr.valid() {
+                } else if !client.assoc4.addr.ip.is_zero() {
                     self.udp.send_to(client.assoc4.addr, packet);
                     return true;
                 }
@@ -278,16 +317,16 @@ impl DHT {
     }
 
     fn route_to_friend(&self, to: &Key, packet: &[u8]) -> bool {
-        let friend = match self.friends.iter().find(|f| f.id == to) {
+        let friend = match self.friends.values().find(|f| f.id == *to) {
             Some(f) => f,
             None => return false,
         };
         let sent = false;
-        for client in friend.clients.iter() {
-            if client.assoc4.addr.valid() && !client.assoc4.is_bad() {
+        for client in friend.clients.mut_iter() {
+            if !client.assoc4.addr.ip.is_zero() && !client.assoc4.is_bad() {
                 self.udp.send_to(client.assoc4.addr, packet);
                 sent = true;
-            } else if client.assoc6.addr.valid() && !client.assoc6.is_bad() {
+            } else if !client.assoc6.addr.ip.is_zero() && !client.assoc6.is_bad() {
                 self.udp.send_to(client.assoc6.addr, packet);
                 sent = true;
             }
@@ -297,14 +336,15 @@ impl DHT {
 
     fn random_path(&self) -> Result<[Node, ..3], ()> {
         let nodes = Vec::with_capacity(3);
-        if self.friends.len() == 0 {
+        if self.friends.len() < 3 {
             return Err(());
         }
         let lan_ok = false;
         let MAX_TRIES = 6;
         for _ in range(0, MAX_TRIES) {
-            let friend_num = task_rng().range(0, self.friends.len());
-            match self.friends[friend_num].clients.random_node(lan_ok) {
+            let friend_num = task_rng().gen_range(0, self.friends.len());
+            let friend = self.friends.values().nth(friend_num).unwrap();
+            match friend.clients.random_node(lan_ok) {
                 Some(n) => nodes.push(n),
                 None => continue,
             }
@@ -319,7 +359,7 @@ impl DHT {
         for (i, v) in nodes.move_iter().enumerate() {
             rv[i] = v;
         }
-        Ok(rv);
+        Ok(rv)
     }
 }
 
@@ -330,27 +370,38 @@ struct ClientList {
 }
 
 impl ClientList {
+    fn new() -> ClientList {
+        ClientList {
+            clients: Vec::new(),
+            bootstrap_times: 0,
+            last_get_node: 0,
+        }
+    }
+
+    fn contains(&self, id: &Key) -> bool {
+        self.clients.iter().any(|c| c.id == *id)
+    }
+
     fn random_node(&self, lan_ok: bool) -> Option<Node> {
         let possible = Vec::new();
-        for (i, client) in self.clients.enumerate() {
-            if !client.assoc4.is_bad() && (lan_ok || !client.assoc4.is_lan()) {
+        for (i, client) in self.clients.mut_iter().enumerate() {
+            if !client.assoc4.is_bad() && (lan_ok || !client.assoc4.addr.ip.is_lan()) {
                 possible.push((i, IPv4));
             }
-            if !client.assoc6.is_bad() && (lan_ok || !client.assoc6.is_lan()) {
+            if !client.assoc6.is_bad() && (lan_ok || !client.assoc6.addr.ip.is_lan()) {
                 possible.push((i, IPv6));
             }
         }
         if possible.len() == 0 {
             return None;
         }
-        let val = task_rng().range(0, possible.len());
-        let (i, kind) = possible[val];
-        let id = self.clients[i].id.clone();
+        let (i, kind) = task_rng().choose(possible.as_slice());
+        let client = self.clients.get_mut(i);
         let addr = match kind {
-            IPv4 => self.clients[i].assoc4.addr,
-            IPv6 => self.clients[i].assoc6.addr,
+            IPv4 => client.assoc4.addr,
+            IPv6 => client.assoc6.addr,
         };
-        Node { id: id, addr: addr }
+        Some(Node { id: client.id, addr: addr })
     }
 
     fn replace_bad(&mut self, n: &Node) -> bool {
@@ -364,7 +415,7 @@ impl ClientList {
     }
 
     fn replace_possibly_bad(&mut self, n: &Node, cmp_id: &Key) -> bool {
-        cmp_id.sort(&mut self.clients);
+        self.clients.sort_by(|c1, c2| cmp_id.cmp(&c1.id, &c2.id));
         for client in self.clients.mut_iter().rev() {
             if !client.assoc4.hardened() && !client.assoc6.hardened() {
                 client.replace(n);
@@ -378,7 +429,7 @@ impl ClientList {
         if self.clients.len() == 0 {
             return false;
         }
-        cmp_id.sort(&mut self.clients);
+        self.clients.sort_by(|c1, c2| cmp_id.cmp(&c1.id, &c2.id));
         let last = self.clients.get_mut(self.clients.len()-1);
         if cmp_id.cmp(&last.id, &n.id) == Less {
             return false;
@@ -389,8 +440,8 @@ impl ClientList {
 
     fn get_close_nodes(&self, close_to: &Key, lan_ok: bool, only_hard: bool,
                        nodes: &mut Vec<Node>) {
-        for cand in self.clients {
-            if nodes.contains(cand.id) {
+        for cand in self.clients.mut_iter() {
+            if nodes.iter().any(|n| n.id == cand.id) {
                 continue;
             }
             let addr = if cand.assoc4.timestamp > cand.assoc6.timestamp {
@@ -401,38 +452,39 @@ impl ClientList {
             if addr.is_bad() {
                 continue;
             }
-            if addr.is_lan() && !lan_ok {
+            if addr.addr.ip.is_lan() && !lan_ok {
                 continue;
             }
-            if !addr.is_lan() && only_hard && !addr.hardened() && cand.id != close_to {
+            if !addr.addr.ip.is_lan() && only_hard && !addr.hardened() &&
+                    cand.id != *close_to {
                 continue;
             }
             if nodes.len() < MAX_SENT_NODES {
-                nodes.push(Node { id: cand.id.clone(), addr: addr });
+                nodes.push(Node { id: cand.id, addr: addr.addr });
                 if nodes.len() == MAX_SENT_NODES {
-                    close_to.sort(nodes);
+                    nodes.sort_by(|n1, n2| close_to.cmp(&n1.id, &n2.id));
                 }
             } else {
-                if close_to.cmp(cand.id, &nodes.tail().id) == Greater {
+                if close_to.cmp(&cand.id, &nodes.last().unwrap().id) == Greater {
                     continue;
                 }
                 nodes.pop();
                 let n = nodes.len();
                 while (n > 0) {
-                    if close_to.cmp(cand.id, &nodes.get(n-1).id) == Greater {
+                    if close_to.cmp(&cand.id, &nodes.get(n-1).id) == Greater {
                         break;
                     }
                     n -= 1;
                 }
                 // This is O(MAX_SENT_NODES) but MAX_SENT_NODES is only 4.
-                nodes.insert(n, Node { id: cand.id.clone(), addr: addr });
+                nodes.insert(n, Node { id: cand.id, addr: addr.addr });
             }
         }
     }
 
     fn get_addr(&self, id: &Key) -> Option<SocketAddr> {
         for client in self.clients.iter() {
-            if client.id == id {
+            if client.id == *id {
                 if !client.assoc4.is_bad() {
                     return Some(client.assoc4.addr);
                 }
@@ -448,14 +500,15 @@ impl ClientList {
         self.last_get_node + GET_NODE_INTERVAL < utils::time::sec()
     }
 
-    fn do_ping_and_sendnode_requests(&mut self /* */) -> Result<Node, bool> {
+    fn do_ping_and_sendnode_requests(&mut self,
+                                     pinger: &PingControl) -> Result<Node, bool> {
         let all_kill = true;
         let possible = Vec::new();
-        for (i, client) in self.clients.enumerate() {
+        for (i, client) in self.clients.mut_iter().enumerate() {
             if !client.assoc4.is_kill() {
                 all_kill = false;
                 if client.assoc4.should_ping() {
-                    self.pinger.send_ping(client.assoc4.addr, client.id.clone());
+                    pinger.send_ping(client.assoc4.addr, &client.id);
                 }
                 if !client.assoc4.is_bad() {
                     possible.push((i, IPv4));
@@ -464,7 +517,7 @@ impl ClientList {
             if !client.assoc6.is_kill() {
                 all_kill = false;
                 if client.assoc6.should_ping() {
-                    self.pinger.send_ping(client.assoc6.addr, client.id.clone());
+                    pinger.send_ping(client.assoc6.addr, &client.id);
                 }
                 if !client.assoc6.is_bad() {
                     possible.push((i, IPv6));
@@ -474,14 +527,23 @@ impl ClientList {
         if (self.get_node_timed_out() || self.can_bootstrap()) && possible.len() > 0 {
             self.last_get_node = utils::time::sec();
             self.bootstrap_times += 1;
-            let i = task_rng().range(0, possible.len());
-            let (i, family) = possible.get(i);
-            match family {
-                IPv4 => return Ok(self.clients[i].assoc4.node.clone()),
-                IPv6 => return Ok(self.clients[i].assoc6.node.clone()),
-            }
+            let (i, family) = task_rng().choose(possible.as_slice());
+            let client = self.clients.get(i);
+            let addr = match family {
+                IPv4 => client.assoc4.addr,
+                IPv6 => client.assoc6.addr
+            };
+            return Ok(Node { id: client.id, addr: addr });
         }
         Err(all_kill)
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        unreachable!();
+    }
+
+    fn mut_iter<'a>(&'a mut self) -> MutItems<'a, Client> {
+        self.clients.mut_iter()
     }
 }
 
@@ -493,30 +555,36 @@ struct Client {
 
 impl Client {
     fn replace(&mut self, n: &Node) {
-        match n.ip.family() {
-            IPv4 => {
+        match n.addr.ip {
+            Ipv4Addr(..) => {
                 self.assoc4.addr = n.addr;
                 self.assoc4.timestamp = utils::time::sec();
-                self.assoc6.addr = TimedSocketAddr::new();
-                self.id = n.id.clone();
+                self.assoc6 = TimedSocketAddr::new();
+                self.id = n.id;
             },
-            IPv6 => {
+            Ipv6Addr(..) => {
                 self.assoc6.addr = n.addr;
                 self.assoc6.timestamp = utils::time::sec();
-                self.assoc4.addr = TimedSocketAddr::new();
-                self.id = n.id.clone();
+                self.assoc4 = TimedSocketAddr::new();
+                self.id = n.id;
             }
         }
     }
 }
 
 struct TimedSocketAddr {
+    ret_addr: SocketAddr,
+    ret_time: u64,
     addr: SocketAddr,
     timestamp: u64,
     last_pinged: u64,
 }
 
 impl TimedSocketAddr {
+    fn hardened(&self) -> bool {
+        unreachable!();
+    }
+
     fn new() -> TimedSocketAddr {
         unsafe { mem::init() }
     }
@@ -537,34 +605,35 @@ impl TimedSocketAddr {
 pub struct DHTControl;
 
 impl DHTControl {
-    fn get_close_nodes(&self, id: &Key, lan_ok: bool, only_good: bool) -> Vec<Node> {
+    pub fn get_close_nodes(&self, id: &Key, lan_ok: bool, only_good: bool) -> Vec<Node> {
         unreachable!();
     }
 
-    fn get_closelist_nodes(&self) -> Vec<Node> {
+    pub fn get_closelist_nodes(&self) -> Vec<Node> {
         unreachable!();
     }
 
-    fn random_path(&self) -> IoResult<Box<[Node, ..3]>> {
+    pub fn random_path(&self) -> IoResult<Box<[Node, ..3]>> {
         unreachable!();
     }
 
-    fn route_to_friend(&self, id: &Key, data: Vec<u8>) {
+    pub fn route_to_friend(&self, id: &Key, data: Vec<u8>) {
         unreachable!();
     }
 
-    fn del_friend(&self, id: &Key) {
+    pub fn del_friend(&self, id: &Key) {
         unreachable!();
     }
 
-    fn refresh_friend(&self, old: &Key, new: &Key) {
+    pub fn refresh_friend(&self, old: &Key, new: &Key) {
         unreachable!();
     }
 
-    fn add_friend(&self, id: &Key) {
+    pub fn add_friend(&self, id: &Key) {
         unreachable!();
     }
 
-    fn get_all_nodes(&self, nodes: Vec<Node>, id: &Key) {
+    pub fn get_all_nodes(&self, nodes: Vec<Node>, id: &Key) {
+        unreachable!();
     }
 }

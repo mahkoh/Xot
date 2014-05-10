@@ -38,6 +38,7 @@ static LEVEL2_PRIVATE: uint = 3u * LEVEL0_PRIVATE;
 /// TODO
 static PING_ID_TIMEOUT: u64 = 20;
 static CONTACT_TIMEOUT: u64 = 300;
+static MAX_CONTACTS: uint = 48;
 
 /// Client to whom we have an onion path.
 struct Contact {

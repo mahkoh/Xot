@@ -1,3 +1,4 @@
+/*
 extern crate time;
 
 use std::fmt;
@@ -30,25 +31,6 @@ static PORT_DEFAULT: uint = PORT_MIN;
 
 pub type ClientId = Key;
 
-impl fmt::Show for ClientId {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let my = self.raw();
-        for &n in my.iter() {
-            try!(fmt.buf.write_str(format!("{:x}", n)));
-        }
-        Ok(())
-    }
-}
-
-impl FromStr for ClientId {
-    fn from_str(s: &str) -> Option<ClientId> {
-        let mut buf = [0u8, ..32];
-        match parse_hex(s, buf.as_mut_slice()) {
-            Ok(_)  => Some(Key(buf)),
-            Err(_) => None,
-        }
-    }
-}
 
 ///////////////////////////////////////////
 // Friend
@@ -122,3 +104,4 @@ impl<'a> Xot {
     pub fn friends(&'a mut self) -> &'a [Friend<'a>] { }
     */
 }
+*/

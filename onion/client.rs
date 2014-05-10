@@ -33,28 +33,29 @@ static ANNOUNCE_INTERVAL_NOT_ANNOUNCED: u64 = 10;
 static ANNOUNCE_INTERVAL_ANNOUNCED: u64 = 30;
 static ONION_FAKE_ID_INTERVAL: u64 = 30;
 static DHT_FAKE_ID_INTERVAL: u64 = 20;
-static MAX_ONION_CLIENTS: uint = 8;
+static MAX_CLIENTS: uint = 8;
 static META_TIMEOUT: u64 = 300;
 static MAX_PING_NODES_SECOND: uint = 5;
 static MAX_STORED_PINGED_NODES: uint = 9;
 static ONION_CONTACT_TIMEOUT: u64 = 120;
 static ONION_CONTACT_PING_INTERVAL: u64 = 30;
 static MIN_NODE_PING_TIME: u64 = 10;
+static MAX_ONION_PATHS: uint = 3;
 
 /// A node in the onion network.
 pub struct PathNode {
     /// Our public key generated specifically for this node.
-    public: Key,
+    pub public: Key,
     /// The key precomputed from the peer's public key and the private key which
     /// corresponds to the public key above.
-    encoder: PrecomputedKey,
+    pub encoder: PrecomputedKey,
     /// The address of the node.
-    addr: SocketAddr,
+    pub addr: SocketAddr,
 }
 
 /// The intemediate steps in an onion request.
 pub struct OnionPath {
-    nodes: [PathNode, ..3],
+    pub nodes: [PathNode, ..3],
     last_success: u64,
     creation: u64,
 }
@@ -249,6 +250,7 @@ impl<'a> Friend<'a> {
         self.pipe.send(path, addr, packet);
         self.raw.last_pinged.push(Ping { id: *id, timestamp: utils::time::sec() });
         self.raw.ping_nodes_second += 1;
+        Ok(())
     }
 
     /// Send data to a friend via the onion network.
@@ -330,7 +332,7 @@ impl<'a> Friend<'a> {
                 self.send_meta_request(Two(i));
             }
         }
-        if count <= task_rng().gen_range(0, MAX_ONION_CLIENTS) {
+        if count <= task_rng().gen_range(0, MAX_CLIENTS) {
             let lan_ok = true;
             let want_good = false;
             let nodes = self.dht.get_close_nodes(self.crypto_public, lan_ok, want_good);
@@ -358,7 +360,7 @@ impl<'a> Friend<'a> {
                 self.raw.contacts.get(i).last_pinged = utils::time::sec();
             }
         }
-        if count <= task_rng().gen_range(0, MAX_ONION_CLIENTS) {
+        if count <= task_rng().gen_range(0, MAX_CLIENTS) {
             // Is this correct?
             let lan_ok = false;
             let want_good = false;
@@ -589,6 +591,7 @@ impl Client {
 
     fn myself(&mut self) -> Friend {
         // TODO find out what goes here
+        unreachable!();
     }
 
     /// Create a convenience wrapper for the friend at position `i`.
@@ -872,5 +875,21 @@ impl Client {
         let nodes: Vec<Node> = try!(data.read_struct());
         friend.dht.get_all_nodes(nodes, &friend.raw.fake_id.unwrap());
         Ok(())
+    }
+}
+
+pub struct OnionControl;
+
+impl OnionControl {
+    pub fn friend_request(&self, id: &Key, nospam: [u8, ..4], msg: &str) {
+        unreachable!();
+    }
+
+    pub fn add_friend(&self, id: &Key) {
+        unreachable!();
+    }
+
+    pub fn del_friend(&self, id: &Key) {
+        unreachable!();
     }
 }

@@ -370,3 +370,11 @@ impl<'a> LosslessUDP {
         con.handle_data(data)
     }
 }
+
+pub struct LudpControl;
+
+impl LudpControl {
+    pub fn kill(&self, addr: SocketAddr) {
+        unreachable!();
+    }
+}
