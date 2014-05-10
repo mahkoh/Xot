@@ -2,7 +2,7 @@
 //!
 //! We use these lockers to avoid unnecessary key computations.
 
-use crypt::{Key, PrecomputedKey};
+use crypt::{Key, SecretKey, PrecomputedKey};
 use time::{get_time};
 use std::{u8,u64};
 use std::cast::{transmute_lifetime};
@@ -15,7 +15,7 @@ static TOTAL:         uint = (u8::MAX as uint + 1u) * KEYS_PER_SLOT;
 
 /// An object that holds precomputed keys.
 pub struct Keylocker {
-    secret: Key,
+    secret: SecretKey,
     holes: [Option<Entry>, ..TOTAL]
 }
 
@@ -36,7 +36,7 @@ impl Entry {
 
 impl<'a> Keylocker {
     /// Create a new keylocker with secret key `secret`.
-    pub fn new(secret: Key) -> Keylocker {
+    pub fn new(secret: SecretKey) -> Keylocker {
         Keylocker { secret: secret, holes: [None, ..TOTAL] }
     }
 
@@ -75,7 +75,7 @@ impl<'a> Keylocker {
         }
 
         self.holes[replacable] = Some(Entry {
-            id: public.clone(),
+            id: *public,
             computed: PrecomputedKey::new(&self.secret, public),
             request_count: 1,
             last_requested: get_time().sec,

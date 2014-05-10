@@ -870,7 +870,7 @@ impl Client {
             friend.raw.fake_id = Some(fake_id);
         }
         let nodes: Vec<Node> = try!(data.read_struct());
-        friend.dht.get_all_nodes(nodes, friend.raw.fake_id.unwrap());
+        friend.dht.get_all_nodes(nodes, &friend.raw.fake_id.unwrap());
         Ok(())
     }
 }

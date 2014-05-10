@@ -560,4 +560,11 @@ impl DHTControl {
     fn refresh_friend(&self, old: &Key, new: &Key) {
         unreachable!();
     }
+
+    fn add_friend(&self, id: &Key) {
+        unreachable!();
+    }
+
+    fn get_all_nodes(&self, nodes: Vec<Node>, id: &Key) {
+    }
 }

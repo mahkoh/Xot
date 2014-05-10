@@ -1,10 +1,14 @@
 use std::io::net::ip::{SocketAddr};
 use std::io::{MemReader, MemWriter, IoResult};
-use crypt::{Key, Nonce};
+use crypt::{Key, Nonce, PrecomputedKey, key_pair};
+use utils;
 use utils::{other_error};
+use std::{u64, mem};
+use messenger::{Offline};
 
 static CRYPTO_HANDSHAKE: u8 = 2;
 static CRYPTO_PACKET:    u8 = 3;
+static HANDSHAKE_TIMEOUT: u64 = 10;
 
 #[deriving(Eq)]
 enum ConnectionStatus {
@@ -19,7 +23,7 @@ struct Connection<'a> {
     id: uint,
 }
 
-impl Connection {
+impl<'a> Connection<'a> {
     fn handle(&mut self, mut data: MemReader) -> IoResult<()> {
         match self.raw().status {
             HandshakeSent => self.handle_handshake_sent(data),
@@ -128,6 +132,12 @@ struct RawConnection {
     timeout:         u64,
 }
 
+impl RawConnection {
+    fn new() -> RawConnection {
+        unsafe { mem::uninit() }
+    }
+}
+
 struct Cons {
     public: Key,
 }
@@ -156,7 +166,7 @@ impl Cons {
         let nonce: Nonce = try!(data.read_struct());
         let data =
             try!(data.read_encrypted(self.precomputed(&public).with_nonce(&nonce)));
-        let mut data = MemReader(data);
+        let mut data = MemReader::new(data);
         let secret_nonce: Nonce = try!(data.read_struct());
         let session_key: Key = try!(data.read_struct());
 
@@ -172,7 +182,7 @@ impl Cons {
             peer_session:    session_key,
             precomputed:     precomputed,
             status:          NotConfirmed,
-            timeout:         get_time().sec + HANDSHAKE_TIMEOUT,
+            timeout:         utils::time::sec() + HANDSHAKE_TIMEOUT,
         };
         raw.send_nonce.increment();
 
@@ -189,7 +199,7 @@ impl Cons {
                 i
             },
             None => {
-                self.cons.push(Some(con));
+                self.cons.push(RawConnection::new());
                 self.cons.len()-1
             },
         };
@@ -198,4 +208,9 @@ impl Cons {
         try!(con.send_handshake());
         con.send_zero()
     }
+}
+
+pub struct CryptoControl;
+
+impl CryptoControl {
 }

@@ -7,6 +7,7 @@ use utils::{other_error, parse_hex};
 use collections::hashmap::{HashMap};
 use crypt;
 use crypt::{Key};
+use cryptocons::{CryptoControl};
 use std::{fmt, mem};
 use std::from_str::{FromStr};
 
@@ -34,7 +35,7 @@ impl ClientAddr {
     fn checksum(&self) -> [u8, ..2] {
         let check = [0u8, 0u8];
         let Key(ref key) = self.id;
-        for (i, x) in key.enumerate() {
+        for (i, &x) in key.iter().enumerate() {
             check[i % 2] ^= x;
         }
         check[(crypt::KEY + 0) % 2] ^= self.nospam[0];
@@ -79,7 +80,7 @@ impl FromStr for ClientAddr {
         if addr.checksum().as_slice() != check.as_slice() {
             return None;
         }
-        addr
+        Some(addr)
     }
 }
 
@@ -108,6 +109,7 @@ pub enum FriendStatus {
 
 struct Client<'a> {
     raw: &'a mut RawClient,
+    crypto: &'a CryptoControl,
 }
 
 impl<'a> Client<'a> {

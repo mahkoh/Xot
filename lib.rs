@@ -11,6 +11,7 @@ extern crate collections;
 extern crate sync;
 
 pub mod crypt;
+pub mod cryptocons;
 pub mod utils;
 pub mod net;
 pub mod ludp;
