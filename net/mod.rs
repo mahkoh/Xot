@@ -22,8 +22,8 @@ impl Node {
     }
 
     pub fn parse4(data: &[u8]) -> IoResult<Vec<Node>> {
-        let data = BufReader::new(data);
-        let nodes = Vec::new();
+        let mut data = BufReader::new(data);
+        let mut nodes = Vec::new();
         while !data.eof() {
             let id: Key = try!(data.read_struct());
             let a = try!(data.read_u8());
@@ -41,8 +41,8 @@ impl Node {
     }
 
     pub fn parse(data: &[u8]) -> IoResult<Vec<Node>> {
-        let data = BufReader::new(data);
-        let nodes = Vec::new();
+        let mut data = BufReader::new(data);
+        let mut nodes = Vec::new();
         while !data.eof() {
             let id: Key = try!(data.read_struct());
             let addr: SocketAddr = try!(data.read_struct());
@@ -59,8 +59,8 @@ impl Node {
 
 impl Writable for Node {
     fn write_to(&self, w: &mut Writer) -> IoResult<()> {
-        try!(w.write_struct(&self.id));
-        w.write_struct(&self.addr)
+        try!(self.id.write_to(w));
+        self.addr.write_to(w)
     }
 }
 
@@ -75,17 +75,17 @@ impl Writable for Vec<Node> {
 
 impl Readable for Node {
     fn read_from(r: &mut Reader) -> IoResult<Node> {
-        let id: Key = try!(r.read_struct());
-        let addr: SocketAddr = try!(r.read_struct());
+        let id: Key = try!(Readable::read_from(r));
+        let addr: SocketAddr = try!(Readable::read_from(r));
         Ok(Node { id: id, addr: addr })
     }
 }
 
 impl Readable for Vec<Node> {
     fn read_from(r: &mut Reader) -> IoResult<Vec<Node>> {
-        let nodes = Vec::new();
+        let mut nodes = Vec::new();
         loop {
-            let node: Node = match r.read_struct() {
+            let node: Node = match Readable::read_from(r) {
                 Ok(n) => n,
                 Err(e) => match e.kind {
                     EndOfFile => break,
@@ -107,7 +107,7 @@ impl<'a> Writable for Ipv4Nodes<'a> {
         for node in self.nodes.iter() {
             match node.addr.ip {
                 Ipv4Addr(a, b, c, d) => {
-                    try!(w.write_struct(&node.id));
+                    try!(node.id.write_to(w));
                     try!(w.write_u8(a));
                     try!(w.write_u8(b));
                     try!(w.write_u8(c));
@@ -130,7 +130,7 @@ impl<'a> Writable for Ipv6Nodes<'a> {
     fn write_to(&self, w: &mut Writer) -> IoResult<()> {
         for node in self.nodes.iter() {
             match node.addr.ip {
-                Ipv6Addr(..) => try!(w.write_struct(node)),
+                Ipv6Addr(..) => try!(node.write_to(w)),
                 _ => { }
             }
         }

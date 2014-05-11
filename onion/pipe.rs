@@ -124,16 +124,16 @@ impl Onion {
         let (our_key, id, return_path, ping_id, requested_id, data_key, send_back) = {
             let nonce: Nonce = try!(data.read_struct());
             let their_key: Key = try!(data.read_struct());
-            let our_key = self.precomputed(&their_key).clone();
+            let our_key = *self.precomputed(&their_key);
             let (mut plain, private) = {
                 // These manual checks look error prone. Maybe we can come up with
                 // something better.
                 if data.remaining() < LEVEL2_PRIVATE {
                     return other_error();
                 }
-                let data = BufReader::new(data.slice_to_end().initn(LEVEL2_PRIVATE));
+                let mut data = BufReader::new(data.slice_to_end().initn(LEVEL2_PRIVATE));
                 let plain = try!(data.read_encrypted(&our_key.with_nonce(&nonce)));
-                let private = data.slice_to_end().lastn(LEVEL2_PRIVATE);
+                let private = data.slice_to_end().lastn(LEVEL2_PRIVATE).to_owned();
                 (MemReader::new(plain), private)
             };
             let ping_id = try!(plain.read_exact(32));
@@ -179,13 +179,14 @@ impl Onion {
             match pos {
                 Some(p) => {
                     {
-                        let c = self.contacts.get(p);
+                        let c = self.contacts.get_mut(p);
                         c.id        = id;
                         c.addr      = source;
                         c.private   = Vec::from_slice(return_path);
                         c.data_key  = data_key;
                         c.timestamp = utils::time::sec();
                     }
+                    let key = &self.dht_pub;
                     self.contacts.sort_by(|e1, e2| {
                         match (e1.timed_out(), e2.timed_out()) {
                             (true,  true)  => Equal,
@@ -193,7 +194,7 @@ impl Onion {
                             (true,  false) => Less,
                             // dht_pub.cmp returs better < worse, so we interchange the
                             // arguments.
-                            (false, false) => self.dht_pub.cmp(&e2.id, &e1.id),
+                            (false, false) => key.cmp(&e2.id, &e1.id),
                         }
                     });
                 },
@@ -306,7 +307,11 @@ impl Onion {
             let key = self.precomputed(&id);
             try!(key.with_nonce(&nonce).decrypt(data.slice_to_end().initn(pdw)))
         };
-        data.consume(data.remaining() - pdw);
+        {
+            let to_consume = data.remaining() - pdw;
+            data.consume(to_consume);
+        }
+
         let mut decrypted = MemReader::new(decrypted);
 
         let dest: SocketAddr = try!(decrypted.read_struct());

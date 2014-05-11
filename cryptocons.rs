@@ -111,7 +111,7 @@ impl<'a> Connection<'a> {
         try!(packet.write_struct(self.public));
         try!(packet.write_struct(&nonce));
         {
-            let key = self.precomputed(&self.raw.public).with_nonce(&nonce);
+            let key = self.raw.locker.get(&self.raw.public).with_nonce(&nonce);
             try!(packet.write_encrypted(&key, private.get_ref()));
         }
 
@@ -176,14 +176,15 @@ impl Cons {
         }
     }
 
-    fn handle(&self, addr: SocketAddr, mut data: MemReader) -> IoResult<()> {
+    fn handle(&mut self, addr: SocketAddr, mut data: MemReader) -> IoResult<()> {
         match self.find_con(addr) {
-            Some(con) => con.handle(data),
-            None => self.handle_new(addr, data),
+            Some(mut con) => return con.handle(data),
+            None => { }
         }
+        self.handle_new(addr, data)
     }
 
-    fn handle_new(&self, addr: SocketAddr, mut data: MemReader) -> IoResult<()> {
+    fn handle_new(&mut self, addr: SocketAddr, mut data: MemReader) -> IoResult<()> {
         let kind = try!(data.read_u8());
         if kind != CRYPTO_HANDSHAKE {
             self.ludp.kill(addr);
@@ -222,7 +223,7 @@ impl Cons {
         raw.send_nonce.increment();
 
         self.cons.push(RawConnection::new());
-        let con = self.find_con(addr).unwrap();
+        let mut con = self.find_con(addr).unwrap();
         try!(con.send_handshake());
         con.send_zero()
     }
