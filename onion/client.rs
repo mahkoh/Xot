@@ -135,16 +135,6 @@ impl<'a> Friend<'a> {
         }
     }
 
-    fn set_path_timeout(&mut self, addr: SocketAddr) -> Option<uint> {
-        for (i, path) in self.raw.paths.mut_iter().enumerate() {
-            if path.nodes[0].addr == addr {
-                path.last_success = utils::time::sec();
-                return Some(i);
-            }
-        }
-        None
-    }
-
     /// Change the onion status of the friend.
     /// 
     /// Use this instead of setting the onlien friend manually.
@@ -467,7 +457,7 @@ struct Contact {
     /// Last time we pinged this contact.
     last_pinged: u64,
     /// The friend's onion path we used for this contact.
-    path_used:   uint,
+    path_used:   Option<uint>,
     /// The friend's data key, according to this contact.
     data_key:    Option<Key>,
     /// The contact's current ping id.
@@ -614,9 +604,9 @@ impl Client {
     }
 
     /// Send a friend request.
-    fn send_friend_request(&self, id: &Key, nospam: [u8, ..4],
+    fn send_friend_request(&mut self, id: &Key, nospam: [u8, ..4],
                            msg: &[u8]) -> IoResult<()> {
-        let friend = try!(self.find_friend(id));
+        let mut friend = try!(self.find_friend(id));
         let packet = {
             let mut packet = MemWriter::new();
             try!(packet.write_u8(CRYPTO_PACKET_FRIEND_REQ));
@@ -640,7 +630,7 @@ impl Client {
     }
 
     /// Handle a meta response.
-    fn handle_meta_response(&self, source: SocketAddr,
+    fn handle_meta_response(&mut self, source: SocketAddr,
                             mut data: MemReader) -> IoResult<()> {
         /////
         // PART 1: Read the send-back-data.
@@ -649,11 +639,11 @@ impl Client {
         let (num, addr, id) = {
             // Don't forget to consume the send back slice below.
             let send_back = data.slice_to_end().slice(0, SEND_BACK);
-            let send_back = BufReader::new(send_back);
+            let mut send_back = BufReader::new(send_back);
             let nonce: Nonce = try!(send_back.read_struct());
             let private =
                 try!(self.symmetric.with_nonce(&nonce).decrypt(send_back.slice_to_end()));
-            let private = MemReader::new(private);
+            let mut private = MemReader::new(private);
             let num = match try!(private.read_be_u32()) {
                 0 => None,
                 n => Some(n-1),
@@ -674,19 +664,18 @@ impl Client {
         // PART 2: Decrypt the nodes.
         /////
 
-        let decrypted = {
+        let mut decrypted = {
             let nonce: Nonce = try!(data.read_struct());
             let friend = match num {
                 Some(n) => try!(self.get_friend(n as uint)),
                 None    => self.myself(),
             };
-            let machine =
-                PrecomputedKey::new(&friend.raw.tmp_private, &id).with_nonce(&nonce);
-            let decrypted = try!(data.read_encrypted(&machine));
+            let key = PrecomputedKey::new(&friend.raw.tmp_private, &id);
+            let decrypted = try!(data.read_encrypted(&key.with_nonce(&nonce)));
             MemReader::new(decrypted)
         };
 
-        let is_data_key = try!(decrypted.read_u8()) != 0;
+        let mut is_data_key = try!(decrypted.read_u8()) != 0;
         let ping_id_or_data_key: Key = try!(decrypted.read_struct());
         let nodes: Vec<Node> = try!(decrypted.read_struct());
 
@@ -694,7 +683,7 @@ impl Client {
         // PART 3: Store the respondee in the nodes list (if possible).
         /////
 
-        let friend = match num {
+        let mut friend = match num {
             Some(n) => try!(self.get_friend(n as uint)),
             None => {
                 if is_data_key && self.data_key_public != ping_id_or_data_key {
@@ -704,25 +693,28 @@ impl Client {
             },
         };
         // Sort worst --> best.
-        friend.raw.contacts.sort_by(|c1,c2| {
-            match (c1.timed_out(), c2.timed_out()) {
-                (true,  true)  => Equal,
-                (false, true)  => Greater,
-                (true,  false) => Less,
-                // real_id.cmp returs better < worse, so we interchange the arguments.
-                (false, false) => friend.raw.real_id.cmp(&c2.id, &c1.id),
-            }
-        });
+        {
+            let real_id = &friend.raw.real_id;
+            friend.raw.contacts.sort_by(|c1,c2| {
+                match (c1.timed_out(), c2.timed_out()) {
+                    (true,  true)  => Equal,
+                    (false, true)  => Greater,
+                    (true,  false) => Less,
+                    // real_id.cmp returs better < worse, so we interchange the arguments.
+                    (false, false) => real_id.cmp(&c2.id, &c1.id),
+                }
+            });
+        }
         // Store some info for use further down. This isn't perfect but good enough for
         // now.
-        let furthest_away: Option<Key>;
-        let has_timed_out = true;
+        let mut furthest_away = None;
+        let mut has_timed_out = true;
         // We need a spot to store the respondee in. If the list is already filled, we try
         // to find a node which is worse. If the list isn't full, we simply add a new node
         // to it.
         let index = match friend.raw.contacts.len() {
             MAX_CLIENTS => {
-                let index = {
+                let mut index = {
                     let contact = friend.raw.contacts.get(0);
                     // See comment above.
                     has_timed_out = contact.timed_out();
@@ -748,12 +740,20 @@ impl Client {
         };
         match index {
             Some(i) => {
-                let c = friend.raw.contacts.get(i);
+                let path_used =
+                    friend.raw.paths.iter().position(|p| p.nodes[0].addr == addr);
+                match path_used {
+                    Some(i) =>
+                        friend.raw.paths.get_mut(i).last_success = utils::time::sec(),
+                    None => { }
+                }
+
+                let c = friend.raw.contacts.get_mut(i);
                 c.id = id;
                 c.addr = addr;
                 c.timestamp = utils::time::sec();
                 c.last_pinged = utils::time::sec();
-                c.path_used = friend.set_path_timeout(source).unwrap();
+                c.path_used = path_used;
                 match is_data_key {
                     true  => c.data_key = Some(ping_id_or_data_key),
                     false => c.ping_id = *ping_id_or_data_key.raw(),
@@ -801,21 +801,20 @@ impl Client {
     }
 
     /// Handle data forwarded via the onion network.
-    fn handle_forwarded(&self, source: SocketAddr, mut data: MemReader) -> IoResult<()> {
+    fn handle_forwarded(&mut self, source: SocketAddr,
+                        mut data: MemReader) -> IoResult<()> {
         let nonce: Nonce = try!(data.read_struct());
 
-        let encrypted = {
+        let mut encrypted = {
             let key: Key = try!(data.read_struct());
-            let machine =
-                PrecomputedKey::new(&self.data_key_private, &key).with_nonce(&nonce);
-            MemReader::new(try!(data.read_encrypted(&machine)))
+            let our_key = PrecomputedKey::new(&self.data_key_private, &key);
+            MemReader::new(try!(data.read_encrypted(&our_key.with_nonce(&nonce))))
         };
         let key: Key = try!(encrypted.read_struct());
 
-        let encrypted = {
-            let machine =
-                PrecomputedKey::new(&self.crypto_private, &key).with_nonce(&nonce);
-            MemReader::new(try!(encrypted.read_encrypted(&machine)))
+        let mut encrypted = {
+            let key = PrecomputedKey::new(&self.crypto_private, &key);
+            MemReader::new(try!(encrypted.read_encrypted(&key.with_nonce(&nonce))))
         };
         match try!(encrypted.read_u8()) {
             FAKE_ID => self.handle_fake_id(&key, encrypted),
@@ -824,13 +823,12 @@ impl Client {
     }
 
     /// Handle a fake id sent via DHT.
-    fn handle_dht_fake_id(&self, source: &Key, mut data: MemReader) -> IoResult<()> {
+    fn handle_dht_fake_id(&mut self, source: &Key, mut data: MemReader) -> IoResult<()> {
         let key: Key = try!(data.read_struct());
         let mut data = {
             let nonce: Nonce = try!(data.read_struct());
-            let machine =
-                PrecomputedKey::new(&self.crypto_private, &key).with_nonce(&nonce);
-            let data = try!(data.read_encrypted(&machine));
+            let key = PrecomputedKey::new(&self.crypto_private, &key);
+            let data = try!(data.read_encrypted(&key.with_nonce(&nonce)));
             MemReader::new(data)
         };
         /* See
@@ -843,7 +841,7 @@ impl Client {
     }
 
     /// Handle a fake id sent via the onion network.
-    fn handle_fake_id(&self, id: &Key, mut data: MemReader) -> IoResult<()> {
+    fn handle_fake_id(&mut self, id: &Key, mut data: MemReader) -> IoResult<()> {
         let friend = try!(self.find_friend(id));
         {
             let no_replay = try!(data.read_be_u64());

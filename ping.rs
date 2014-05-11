@@ -165,7 +165,7 @@ impl Pinger {
                            mut req: MemReader) -> IoResult<()> {
         let id: Key = try!(req.read_struct());
         let mut nonce: Nonce = try!(req.read_struct());
-        let key = self.precomputed(&id).clone();
+        let key = *self.precomputed(&id);
         let data = try!(req.read_encrypted(&key.with_nonce(&nonce)));
 
         self.add_to_ping(addr, &id);

@@ -53,7 +53,7 @@ pub struct ClientAddr {
 
 impl ClientAddr {
     fn checksum(&self) -> [u8, ..2] {
-        let check = [0u8, 0u8];
+        let mut check = [0u8, 0u8];
         let Key(ref key) = self.id;
         for (i, &x) in key.iter().enumerate() {
             check[i % 2] ^= x;
@@ -134,7 +134,7 @@ struct Client<'a> {
 }
 
 impl<'a> Client<'a> {
-    fn send_message_action(&self, msg: &str, kind: u8) -> IoResult<()> {
+    fn send_message_action(&mut self, msg: &str, kind: u8) -> IoResult<()> {
         self.raw.msg_id += 1;
 
         let mut packet = MemWriter::new();
@@ -145,15 +145,15 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    fn send_message(&self, msg: &str) -> IoResult<()> {
+    fn send_message(&mut self, msg: &str) -> IoResult<()> {
         self.send_message_action(msg, MESSAGE)
     }
 
-    fn send_action(&self, msg: &str) -> IoResult<()> {
+    fn send_action(&mut self, msg: &str) -> IoResult<()> {
         self.send_message_action(msg, ACTION)
     }
 
-    fn set_nick(&self, nick: ~str) {
+    fn set_nick(&mut self, nick: ~str) {
         self.raw.nick = nick;
     }
 
@@ -166,7 +166,7 @@ impl<'a> Client<'a> {
     }
 
     fn invite_to_group(&self, group_id: &Key) -> IoResult<()> {
-        let packet = MemWriter::new();
+        let mut packet = MemWriter::new();
         try!(packet.write_u8(INVITE_GROUP_CHAT));
         try!(packet.write_struct(group_id));
 
@@ -174,7 +174,7 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    fn handle_ping(&self) {
+    fn handle_ping(&mut self) {
         self.raw.last_ping = utils::time::sec();
     }
 
@@ -189,7 +189,7 @@ impl<'a> Client<'a> {
         }
     }
 
-    fn handle_status_message(&self, mut data: MemReader) -> IoResult<()> {
+    fn handle_status_message(&mut self, mut data: MemReader) -> IoResult<()> {
         let message = try!(data.read_to_end());
         match from_utf8(message.as_slice()) {
             Some(message) => {
@@ -201,13 +201,13 @@ impl<'a> Client<'a> {
         }
     }
 
-    fn ping(&self) -> IoResult<()> {
+    fn ping(&mut self) -> IoResult<()> {
         self.crypto.send_packet(&self.raw.id, vec!(PING));
         self.raw.last_ping = utils::time::sec();
         Ok(())
     }
 
-    fn handle_user_status(&self, mut data: MemReader) -> IoResult<()> {
+    fn handle_user_status(&mut self, mut data: MemReader) -> IoResult<()> {
         let status = try!(data.read_u8());
         let status = try!(UserStatus::from_u8(status));
         self.raw.user_status = status;
@@ -215,7 +215,7 @@ impl<'a> Client<'a> {
         unreachable!();
     }
 
-    fn handle_typing(&self, mut data: MemReader) -> IoResult<()> {
+    fn handle_typing(&mut self, mut data: MemReader) -> IoResult<()> {
         let typing = try!(data.read_u8());
         let typing = typing != 0;
         self.raw.typing = typing;
