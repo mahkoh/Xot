@@ -1,4 +1,6 @@
-Go away.
+```bash
+make
+```
 
 ## License
 
