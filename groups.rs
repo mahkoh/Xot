@@ -175,7 +175,7 @@ impl Group {
                     return other_error();
                 }
                 let peer = Peer {
-                    nick: ~"",
+                    nick: "".to_owned(),
                     last_recv: get_time().sec,
                     last_recv_ping: get_time().sec,
                     last_msg_num: 0,
@@ -240,9 +240,6 @@ impl Group {
 
     fn ping_group(&mut self) {
         self.send_broadcast(vec!(PING));
-    }
-
-    fn send_nick(&mut self) {
     }
 }
 

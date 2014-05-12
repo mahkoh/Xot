@@ -1,14 +1,19 @@
+use std::{fmt, mem};
+use std::str::{from_utf8};
+use std::from_str::{FromStr};
 use std::io::{IoResult, MemWriter, MemReader};
 use std::io::net::ip::{SocketAddr};
-use std::str::{from_utf8};
-use utils;
-use utils::{other_error, parse_hex, StructWriter, StructReader};
+
 use collections::hashmap::{HashMap};
+
 use crypt;
 use crypt::{Key};
+
+use utils;
+use utils::{other_error, parse_hex, StructWriter, StructReader};
+
 use cryptocons::{CryptoControl};
-use std::{fmt, mem};
-use std::from_str::{FromStr};
+
 use onion::client::{OnionControl};
 
 static ACTION:            u8 = 63;
@@ -104,7 +109,7 @@ impl FromStr for ClientAddr {
     }
 }
 
-enum UserStatus {
+pub enum UserStatus {
     NoStatus = 0,
     Away     = 1,
     Busy     = 2,

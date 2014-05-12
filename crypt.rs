@@ -35,6 +35,10 @@ pub static ZERO:    uint = 32;
 pub static BOXZERO: uint = 16;
 pub static HASH:    uint = 32;
 
+mod test {
+    fn test() { }
+}
+
 /// This function must be called before any other to guarantee thread safety.
 pub fn init() {
     unsafe { sodium_init(); }
