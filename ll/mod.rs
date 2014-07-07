@@ -9,6 +9,10 @@ use std::{mem};
 use std::mem::{to_be16, from_be16};
 use std::cast::{transmute};
 
+use net::sockets::{UdpSocket};
+use net::sockets::options::{SolSocket, Rcvbuf, Sndbuf, Broadcast, AddMembership, IpProtoIpv6};
+use net::sockets::options::structs::{Ipv6Mreq};
+
 pub mod sockets;
 
 pub struct Node {
@@ -157,9 +161,17 @@ pub trait IpAddrInfo {
     fn is_ipv4(self) -> bool;
     fn is_zero(self) -> bool;
     fn is_broadcast(self) -> bool;
+    fn family(self) -> IpFamily;
 }
 
 impl IpAddrInfo for IpAddr {
+    fn family(self) -> IpFamily {
+        match self {
+            Ipv4Addr(..) => IPv4,
+            Ipv6Addr(..) => IPv6,
+        }
+    }
+
     fn is_lan(self) -> bool {
         match self {
             Ipv4Addr(a, b, c, d) => {
@@ -383,5 +395,36 @@ impl LowLevelHandler {
             */
         }
     }
+}
 
+pub fn new_socket(mut ipp: SocketAddr) -> IoResult<UdpSocket> {
+    static PORTRANGE_FROM: u16 = 33445;
+    static PORTRANGE_TO:   u16 = 33545;
+
+    let family = ipp.ip.family();
+    let mut sock = try!(UdpSocket::new(family));
+
+    try!(sock.set_opt(&SolSocket(Rcvbuf(1024*1024*2))));
+    try!(sock.set_opt(&SolSocket(Sndbuf(1024*1024*2))));
+    try!(sock.set_opt(&SolSocket(Broadcast(true))));
+
+    if family.is_ipv6() {
+        let mut mreq: Ipv6Mreq = unsafe { mem::init() };
+        mreq.multi_addr.s6_addr[ 0] = 0xFF;
+        mreq.multi_addr.s6_addr[ 1] = 0x02;
+        mreq.multi_addr.s6_addr[15] = 0x01;
+        try!(sock.set_opt(&IpProtoIpv6(AddMembership(mreq))));
+    }
+
+    let mut port = ipp.port;
+    if port < PORTRANGE_FROM || PORTRANGE_TO <= port {
+        port = PORTRANGE_FROM;
+    }
+    for p in range(port, PORTRANGE_TO).chain(range(PORTRANGE_FROM, port)) {
+        ipp.port = p;
+        if sock.bind(ipp).is_ok() {
+            return Ok(sock);
+        }
+    }
+    other_error()
 }

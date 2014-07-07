@@ -71,7 +71,7 @@ pub struct Onion {
     contacts:  Vec<Contact>,
     secret_bytes: [u8, ..32],
     dht_pub:   Key,
-    dht: DHTControl,
+    dht:       DHTControl,
 }
 
 impl Onion {

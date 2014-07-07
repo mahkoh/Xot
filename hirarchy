@@ -1,0 +1,11 @@
+cryptocons -> ludp -> messenger
+onion_client -> onion_pipe -> dht -> pinger
+messenger -> onion_client + cryptocons + dht
+
+direct:
+    cryptocons + ludp
+
+network:
+    onion + dht + pinger
+
+messenger

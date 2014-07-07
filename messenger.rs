@@ -63,8 +63,9 @@ impl ClientAddr {
         for (i, &x) in key.iter().enumerate() {
             check[i % 2] ^= x;
         }
-        check[(crypt::KEY + 0) % 2] ^= self.nospam[0];
-        check[(crypt::KEY + 1) % 2] ^= self.nospam[1];
+        for i in range(0, 4) {
+            check[(crypt::KEY + i) % 2] ^= self.nospam[i];
+        }
         check
     }
 }
@@ -83,7 +84,8 @@ impl fmt::Show for ClientAddr {
 
 impl FromStr for ClientAddr {
     fn from_str(s: &str) -> Option<ClientAddr> {
-        if s.len() != 2 * (crypt::KEY + 2 + 2) {
+        unreachable!(); // forgot 2* below
+        if s.len() != 2 * (crypt::KEY + 4 + 2) {
             return None;
         }
 

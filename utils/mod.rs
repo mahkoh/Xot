@@ -2,10 +2,13 @@ use std::io::{IoResult, MemWriter, MemReader, OtherIoError, standard_error,
               IoError, EndOfFile};
 use crypt::Machine;
 use std::str::{from_utf8};
+use std::comm::{Select, Handle, Receiver};
+use std::io::timer::{Timer};
 
 pub mod ringbuffer;
 pub mod time;
 pub mod bufreader;
+pub mod select;
 
 /// A trait for objects which can be writte via `writer.write_struct()`.
 pub trait Writable {
@@ -172,4 +175,36 @@ impl<'a, T> LastN for &'a [T] {
 pub enum Choice<T,U> {
     One(T),
     Two(U),
+}
+
+trait InBetween {
+    fn in_between(self, start: Self, end: Self) -> bool;
+}
+
+impl<T: Int+Unsigned> InBetween for T {
+    fn in_between(self, start: T, end: T) -> bool {
+        end-self <= end-start && self-start < end-start
+    }
+}
+
+trait ToOption<T> {
+    fn to_option<'a>(&'a self) -> Option<&'a T>;
+}
+
+impl<T> ToOption<T> for Option<T> {
+    fn to_option<'a>(&'a self) -> Option<&'a T> {
+        match self {
+            &Some(ref v) => Some(v),
+            &None => None
+        }
+    }
+}
+
+impl<T,U> ToOption<T> for Result<T,U> {
+    fn to_option<'a>(&'a self) -> Option<&'a T> {
+        match self {
+            &Ok(ref v) => Some(v),
+            &Err(..) => None,
+        }
+    }
 }

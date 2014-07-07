@@ -1,6 +1,8 @@
+use std::io::net::ip::{SocketAddr};
 use std::comm::{channel, Sender, Receiver};
 use messenger::{MessengerControl, UserStatus, ClientAddr};
 use crypt::{Key};
+use net;
 
 struct PeerChange;
 
@@ -35,6 +37,7 @@ pub struct FriendInfo {
 pub enum XotError {
     FriendNotFound,
     GroupNotFound,
+    CantCreateSocket,
 }
 
 enum InfoType {
@@ -149,4 +152,28 @@ impl Xot {
     pub fn set_nospam(&self, ns: [u8, ..4]) {
         self.settings.send(SetNospam(ns));
     }
+
+    pub fn bootstrap(&self, addr: SocketAddr, key: &Key) {
+        unreachable!();
+    }
+}
+
+pub fn new(ipv6: bool) -> XotResult<(Xot, Receiver<Event>)> {
+    let addr = match ipv6 {
+        true => SocketAddr { ip: Ipv6Addr(0,0,0,0,0,0,0,1), port: 33445 },
+        false => SocketAddr { ip: Ipv4Addr(127,0,0,1), port: 33445 },
+    };
+    let (udpwriter, udpreader) = match net::new_socket(addr) {
+        Ok(s) => s.start(),
+        Err(..) => return CantCreateSocket,
+    };
+    let (msg,    msg_rcv)    = messenger::controller();
+    let (ludp,   ludp_rcv)   = ludp::controller();
+    let (crypto, crypto_rcv) = cryptocons::controller();
+    let (onion,  onion_rcv)  = onion::controller();
+    let (ping,   ping_rcv)   = ping::controller();
+    let (dht,    dht_rcv)    = dht::controll();
+
+    dht::run(dht_rcv, ping.clone(), udpwriter.clone());
+    unreachable!();
 }

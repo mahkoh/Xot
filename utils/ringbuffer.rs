@@ -104,6 +104,11 @@ impl<'a, T> RingBuffer<T> {
             buf: self,
         }
     }
+
+    pub fn get_mut(&'a mut self, n: uint) -> &'a mut T {
+        let pos = (self.front + n) % self.cap();
+        self.buf.get_mut(pos).as_mut().unwrap()
+    }
 }
 
 pub struct RingBufIter<'a, T> {

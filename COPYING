@@ -1,24 +1,12 @@
-The Xot License
+The Xot License version 2
 
 Copyright (c) 2014 Various Authors
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+You are allowed to use, copy, modify, and/or distribute this software for any
+purpose with or without fee, provided you abide by the following rules:
 
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
+1) Include this notice in all copies.
+2) If you distribute a modified version of the software's source code, make the
+   modified code available under this license.
 
-Distributions of modified versions of the Software's source code must make
-their changes available under this license.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
+The software is offered as-is, without any warranty.

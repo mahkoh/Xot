@@ -283,7 +283,7 @@ impl<'a> Nonce {
     /// Increment the nonce.
     pub fn increment(&mut self) {
         let &Nonce(ref mut nonce) = self;
-        for v in nonce.mut_iter() {
+        for v in nonce.mut_iter().rev() {
             *v = *v + 1;
             if *v != 0 {
                 break;
@@ -291,10 +291,33 @@ impl<'a> Nonce {
         }
     }
 
+    /// Increment the nonce by `val`.
+    pub fn increment_by(&mut self, val: u16) {
+        let val = val as u32;
+        let cur = BufReader::new(self.raw().tailn(4)).read_be_u32().unwrap();
+
+        let &Nonce(ref mut nonce) = self;
+        if u32::MAX - cur < val {
+            for v in nonce.initn(4).rev() {
+                *v = *v + 1;
+                if *v != 0 {
+                    break;
+                }
+            }
+        }
+        let _ = BufWriter::new(nonce.tailn(4)).write_be_u32(cur + val);
+    }
+
     /// Get the internal buffer.
     pub fn raw(&'a self) -> &'a [u8] {
         let &Nonce(ref nonce) = self;
         nonce.as_slice()
+    }
+
+    /// Get the lowest two bytes of the nonce interpreted as a big endian u16.
+    pub fn u16(&self) -> u16 {
+        let v = BufReader::new(self.raw().tailn(2)).read_be_u16().unwrap();
+        mem::from_be16(v)
     }
 }
 
