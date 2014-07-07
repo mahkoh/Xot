@@ -4,10 +4,9 @@ use utils;
 use utils::ringbuffer::{XBuffer, RingBuffer};
 use utils::{other_error, StructReader, StructWriter, FiniteReader};
 use std::io::net::ip::{SocketAddr, Ipv4Addr, Ipv6Addr};
-use std::mem::{to_be16};
-use std::cast::{transmute};
+use std::mem::{transmute};
 use std::{u64};
-use rand::{task_rng, Rng};
+use std::rand::{task_rng, Rng};
 use net::sockets::{UdpWriter};
 
 static DEFAULT_QUEUE_LEN: uint = 4;
@@ -15,7 +14,7 @@ static MAX_QUEUE_LEN:     uint = 1024;
 static MAX_DATA_SIZE:     uint = 1024;
 static CON_TIMEOUT:       f64  = 5.0;
 
-#[deriving(Eq)]
+#[deriving(PartialEq)]
 enum ConnectionStatus {
     NoConnection,
     HandshakeSending,
@@ -274,7 +273,7 @@ impl<'a> LosslessUDP {
         let mut id = 0u32;
         let mut i = 0u;
 
-        let port: [u8, ..2] = unsafe { transmute(to_be16(addr.port)) };
+        let port: [u8, ..2] = unsafe { transmute(addr.port.to_be()) };
         id ^= self.rand_get(&mut i, port[0]);
         id ^= self.rand_get(&mut i, port[1]);
         match addr.ip {
@@ -285,8 +284,8 @@ impl<'a> LosslessUDP {
                 id ^= self.rand_get(&mut i, d);
             },
             Ipv6Addr(a, b, c, d, e, f, g, h) => {
-                let x = [to_be16(a), to_be16(b), to_be16(c), to_be16(d),
-                         to_be16(e), to_be16(f), to_be16(g), to_be16(h)];
+                let x = [a.to_be(), b.to_be(), c.to_be(), d.to_be(),
+                         e.to_be(), f.to_be(), g.to_be(), h.to_be()];
                 let x: [u8, ..16] = unsafe { transmute(x) };
                 for v in x.iter() {
                     id ^= self.rand_get(&mut i, *v);

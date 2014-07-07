@@ -11,7 +11,7 @@ use utils::{other_error, StructReader, StructWriter, CryptoReader, CryptoWriter}
 use utils::ringbuffer::{RingBuffer};
 use net::sockets::{UdpWriter};
 use keylocker::{Keylocker};
-use rand::{task_rng, Rng};
+use std::rand::{task_rng, Rng};
 
 /// Maximum number of peers whose pongs we're waiting for.
 static MAX_PINING: uint = 512;

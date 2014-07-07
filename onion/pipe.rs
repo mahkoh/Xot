@@ -55,7 +55,7 @@ struct Contact {
 impl Contact {
     fn new() -> Contact {
         // Maybe use uninit?
-        unsafe { mem::init() }
+        unsafe { mem::zeroed() }
     }
 
     fn timed_out(&self) -> bool {
@@ -182,7 +182,7 @@ impl Onion {
                         let c = self.contacts.get_mut(p);
                         c.id        = id;
                         c.addr      = source;
-                        c.private   = Vec::from_slice(return_path);
+                        c.private   = Vec::from_slice(return_path.as_slice());
                         c.data_key  = data_key;
                         c.timestamp = utils::time::sec();
                     }
@@ -236,9 +236,9 @@ impl Onion {
             let nonce = Nonce::random();
             let mut packet = MemWriter::new();
             try!(packet.write_u8(LEVEL2_RESPONSE));
-            try!(packet.write(return_path));
+            try!(packet.write(return_path.as_slice()));
             try!(packet.write_u8(META_RESPONSE));
-            try!(packet.write(send_back));
+            try!(packet.write(send_back.as_slice()));
             try!(packet.write_struct(&nonce));
             try!(packet.write_encrypted(&our_key.with_nonce(&nonce),
                                         encrypted.as_slice()));

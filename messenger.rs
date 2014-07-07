@@ -4,7 +4,7 @@ use std::from_str::{FromStr};
 use std::io::{IoResult, MemWriter, MemReader};
 use std::io::net::ip::{SocketAddr};
 
-use collections::hashmap::{HashMap};
+use std::collections::hashmap::{HashMap};
 
 use crypt;
 use crypt::{Key};
@@ -35,7 +35,7 @@ impl fmt::Show for Key {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         let my = self.raw();
         for &n in my.iter() {
-            try!(fmt.buf.write_str(format!("{:x}", n)));
+            try!(write!(fmt, "{:x}", n));
         }
         Ok(())
     }
@@ -72,11 +72,12 @@ impl ClientAddr {
 impl fmt::Show for ClientAddr {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         self.id.fmt(fmt);
-        try!(fmt.buf.write_str(format!("{:x}", self.nospam[0])));
-        try!(fmt.buf.write_str(format!("{:x}", self.nospam[1])));
+
+        try!(write!(fmt, "{:x}", self.nospam[0]));
+        try!(write!(fmt, "{:x}", self.nospam[1]));
         let checksum = self.checksum();
-        try!(fmt.buf.write_str(format!("{:x}", checksum[0])));
-        try!(fmt.buf.write_str(format!("{:x}", checksum[1])));
+        try!(write!(fmt, "{:x}", checksum[0]));
+        try!(write!(fmt, "{:x}", checksum[1]));
         Ok(())
     }
 }
@@ -126,7 +127,7 @@ impl UserStatus {
     }
 }
 
-#[deriving(Eq)]
+#[deriving(PartialEq)]
 pub enum FriendStatus {
     Requested,
     Offline,
@@ -158,7 +159,7 @@ impl<'a> Client<'a> {
         self.send_message_action(msg, ACTION)
     }
 
-    fn set_nick(&mut self, nick: ~str) {
+    fn set_nick(&mut self, nick: String) {
         self.raw.nick = nick;
     }
 
@@ -198,7 +199,7 @@ impl<'a> Client<'a> {
         let message = try!(data.read_to_end());
         match from_utf8(message.as_slice()) {
             Some(message) => {
-                self.raw.status_message = message.to_owned();
+                self.raw.status_message = message.to_string();
                 /* send to frontend */
                 Ok(())
             },
@@ -228,11 +229,11 @@ impl<'a> Client<'a> {
         unreachable!();
     }
 
-    fn handle_message_action(&self, mut data: MemReader) -> IoResult<(u32, ~str)> {
+    fn handle_message_action(&self, mut data: MemReader) -> IoResult<(u32, String)> {
         let id = try!(data.read_be_u32());
         let message = try!(data.read_to_end());
         let message = match from_utf8(message.as_slice()) {
-            Some(m) => m.to_owned(),
+            Some(m) => m.to_string(),
             None => return other_error(),
         };
         if self.raw.send_receipts {
@@ -281,8 +282,8 @@ impl<'a> Client<'a> {
 }
 
 struct RawClient {
-    status_message:  ~str,
-    nick:            ~str,
+    status_message:  String,
+    nick:            String,
     user_status:     UserStatus,
     typing:          bool,
     request_timeout: i64,
@@ -300,8 +301,8 @@ struct Messenger {
     friends: HashMap<Key, RawClient>,
     onion: OnionControl,
     crypto: CryptoControl,
-    nick: ~str,
-    status_message: ~str,
+    nick: String,
+    status_message: String,
     user_status: UserStatus,
 }
 
@@ -324,7 +325,7 @@ impl Messenger {
         if self.friends.contains_key(&addr.id) {
             return other_error();
         }
-        self.friends.insert(addr.id, unsafe { mem::init() });
+        self.friends.insert(addr.id, unsafe { mem::zeroed() });
         self.onion.add_friend(&addr.id);
         Ok(())
     }
@@ -339,7 +340,7 @@ impl Messenger {
         unreachable!();
     }
 
-    fn set_nick(&mut self, nick: ~str) {
+    fn set_nick(&mut self, nick: String) {
         self.nick = nick;
 
         let mut packet = MemWriter::new();
@@ -352,7 +353,7 @@ impl Messenger {
         }
     }
 
-    fn set_status_message(&mut self, status: ~str) {
+    fn set_status_message(&mut self, status: String) {
         self.status_message = status;
 
         let mut packet = MemWriter::new();
@@ -382,7 +383,7 @@ impl Messenger {
 pub struct MessengerControl;
 
 impl MessengerControl {
-    pub fn friend_request(&self, source: &Key, msg: ~str) {
+    pub fn friend_request(&self, source: &Key, msg: String) {
         unreachable!();
     }
 

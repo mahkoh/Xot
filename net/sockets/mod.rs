@@ -1,7 +1,6 @@
 use std::comm::Messages;
 use std::mem;
-use std::mem::{size_of, to_be16, from_be16};
-use std::cast::{transmute};
+use std::mem::{transmute, size_of, to_be16, from_be16};
 use std::io::net::ip::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::io::{IoResult, IoError};
 use sync::Arc;
@@ -41,18 +40,18 @@ impl<'a> SockAddr {
     fn new(addr: SocketAddr) -> SockAddr {
         match addr.ip {
             Ipv4Addr(a, b, c, d) => unsafe {
-                let mut storage: sockaddr_storage = mem::uninit();
+                let mut storage: sockaddr_storage = mem::uninitialized();
                 let addr4: &mut sockaddr_in = transmute(&mut storage);
                 addr4.sin_family = AF_INET as sa_family_t;
-                addr4.sin_port = to_be16(addr.port);
+                addr4.sin_port = addr.port.to_be();
                 addr4.sin_addr = transmute([a,b,c,d]);
                 SockAddr4(storage)
             },
             Ipv6Addr(a, b, c, d, e, f, g, h) => unsafe {
-                let mut storage: sockaddr_storage = mem::uninit();
+                let mut storage: sockaddr_storage = mem::uninitialized();
                 let addr6: &mut sockaddr_in6 = transmute(&mut storage);
                 addr6.sin6_family = AF_INET6 as sa_family_t;
-                addr6.sin6_port = to_be16(addr.port);
+                addr6.sin6_port = addr.port.to_be();
                 // is this the right order?
                 addr6.sin6_addr = transmute([a,b,c,d,e,f,g,h]);
                 addr6.sin6_flowinfo = 0;
@@ -76,15 +75,15 @@ impl<'a> SockAddr {
                 let addr4: &sockaddr_in = transmute(s);
                 let ip: [u8, ..4] = transmute(addr4.sin_addr);
                 let ip = Ipv4Addr(ip[0],ip[1],ip[2],ip[3]);
-                SocketAddr { ip: ip, port: from_be16(addr4.sin_port) }
+                SocketAddr { ip: ip, port: Int::from_be(addr4.sin_port) }
             },
             &SockAddr6(ref s) => unsafe {
                 let addr6: &sockaddr_in6 = transmute(s);
                 let ip: [u16, ..8] = transmute(addr6.sin6_addr);
-                let ip = Ipv6Addr(from_be16(ip[0]),from_be16(ip[1]),from_be16(ip[2]),
-                                  from_be16(ip[3]),from_be16(ip[4]),from_be16(ip[5]),
-                                  from_be16(ip[6]),from_be16(ip[7]));
-                SocketAddr { ip: ip, port: from_be16(addr6.sin6_port) }
+                let ip = Ipv6Addr(Int::from_be(ip[0]),Int::from_be(ip[1]),Int::from_be(ip[2]),
+                                  Int::from_be(ip[3]),Int::from_be(ip[4]),Int::from_be(ip[5]),
+                                  Int::from_be(ip[6]),Int::from_be(ip[7]));
+                SocketAddr { ip: ip, port: Int::from_be(addr6.sin6_port) }
             },
         }
     }
@@ -143,7 +142,7 @@ impl PlainSocket {
         let &PlainSocket(sock) = self;
         let raw = opt.raw();
         let rv = unsafe {
-            setsockopt(sock, raw.level(), raw.name(), raw.raw() as *c_void, raw.size())
+            setsockopt(sock, raw.level(), raw.name(), raw.raw() as *const c_void, raw.size())
         };
         match rv {
             0 => Ok(()),
@@ -164,7 +163,7 @@ impl PlainSocket {
             let &PlainSocket(sock) = self;
             let size = addr.size() as socklen_t;
             let storage = addr.raw();
-            match bind(sock, storage as *_ as *sockaddr, size) {
+            match bind(sock, storage as *const _ as *const sockaddr, size) {
                 0 => Ok(()),
                 _ => Err(IoError::last_error()),
             }
@@ -216,7 +215,7 @@ impl UdpSocket {
         native::task::spawn(proc() {
             let _ = sender;
             let mut buf = [0u8, ..(1<<16)];
-            let mut addr: sockaddr_storage = unsafe { mem::uninit() };
+            let mut addr: sockaddr_storage = unsafe { mem::uninitialized() };
             loop {
                 let mut s = FdSet::zero();
                 s.set(raw);
@@ -284,8 +283,8 @@ impl UdpWriter {
     pub fn send_to(&self, ipp: SocketAddr, data: &[u8]) -> IoResult<()> {
         let addr = SockAddr::new(ipp);
         let rv = unsafe {
-            sendto(self.sock.raw(), data.as_ptr() as *_, data.len() as size_t, 0,
-                   addr.raw() as *_ as *_, addr.size() as socklen_t)
+            sendto(self.sock.raw(), data.as_ptr() as *const _, data.len() as size_t, 0,
+                   addr.raw() as *const _ as *const _, addr.size() as socklen_t)
         };
         match rv >= 0 && rv as u64 == data.len() as u64 {
             true => Ok(()),

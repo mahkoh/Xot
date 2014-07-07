@@ -7,11 +7,11 @@ use utils;
 use utils::{other_error, StructWriter, CryptoWriter, StructReader, CryptoReader,
             SlicableReader};
 use utils::bufreader::{BufReader};
-use rand::{task_rng, Rng};
+use std::rand::{task_rng, Rng};
 use std::{mem};
 use std::slice::{Items, MutItems};
 use keylocker::{Keylocker};
-use collections::hashmap::{HashMap};
+use std::collections::hashmap::{HashMap};
 use ping::{PingControl};
 
 static MAX_SENT_NODES: uint = 4;
@@ -342,8 +342,8 @@ impl DHT {
             return Err(());
         }
         let lan_ok = false;
-        let MAX_TRIES = 6;
-        for _ in range(0, MAX_TRIES) {
+        let max_tries = 6;
+        for _ in range::<uint>(0, max_tries) {
             let friend_num = task_rng().gen_range(0, self.friends.len());
             let (_, friend) = self.friends.mut_iter().nth(friend_num).unwrap();
             match friend.clients.random_node(lan_ok) {
@@ -357,7 +357,7 @@ impl DHT {
         if nodes.len() != 3 {
             return Err(())
         }
-        let mut rv: [Node, ..3] = unsafe { mem::uninit() };
+        let mut rv: [Node, ..3] = unsafe { mem::uninitialized() };
         for (i, v) in nodes.move_iter().enumerate() {
             rv[i] = v;
         }
@@ -397,7 +397,7 @@ impl ClientList {
         if possible.len() == 0 {
             return None;
         }
-        let (i, kind) = task_rng().choose(possible.as_slice());
+        let &(i, kind) = task_rng().choose(possible.as_slice()).unwrap();
         let client = self.clients.get_mut(i);
         let addr = match kind {
             IPv4 => client.assoc4.addr,
@@ -475,7 +475,7 @@ impl ClientList {
                 }
                 nodes.pop();
                 let mut n = nodes.len();
-                while (n > 0) {
+                while n > 0 {
                     if close_to.cmp(&cand.id, &nodes.get(n-1).id) == Greater {
                         break;
                     }
@@ -532,7 +532,7 @@ impl ClientList {
         if (self.get_node_timed_out() || self.can_bootstrap()) && possible.len() > 0 {
             self.last_get_node = utils::time::sec();
             self.bootstrap_times += 1;
-            let (i, family) = task_rng().choose(possible.as_slice());
+            let &(i, family) = task_rng().choose(possible.as_slice()).unwrap();
             let client = self.clients.get(i);
             let addr = match family {
                 IPv4 => client.assoc4.addr,
@@ -595,7 +595,7 @@ impl TimedSocketAddr {
     }
 
     fn new() -> TimedSocketAddr {
-        unsafe { mem::init() }
+        unsafe { mem::zeroed() }
     }
 
     fn is_bad(&self) -> bool {
