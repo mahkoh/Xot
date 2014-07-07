@@ -12,7 +12,7 @@ static CRYPTO_HANDSHAKE: u8 = 2;
 static CRYPTO_PACKET: u8 = 3;
 static HANDSHAKE_TIMEOUT: u64 = 10;
 
-#[deriving(Eq)]
+#[deriving(PartialEq, Eq)]
 enum ConnectionStatus {
     HandshakeSent,
     NotConfirmed,
@@ -146,7 +146,7 @@ struct RawConnection {
 
 impl RawConnection {
     fn new() -> RawConnection {
-        unsafe { mem::uninit() }
+        unsafe { mem::uninitialized() }
     }
 }
 

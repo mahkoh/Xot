@@ -96,7 +96,7 @@ impl Group {
         self.send_to_all(packet.unwrap().as_slice())
     }
 
-    fn set_nick(&mut self, nick: ~str) -> IoResult<()> {
+    fn set_nick(&mut self, nick: String) -> IoResult<()> {
         self.nick = nick;
         self.send_nick()
     }

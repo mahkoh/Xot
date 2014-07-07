@@ -10,8 +10,8 @@ use utils::bufreader::{BufReader};
 use utils::{other_error, Choice, One, Two, StructReader, StructWriter, CryptoWriter,
             SlicableReader, CryptoReader};
 use net::{Node, IpAddrInfo};
-use rand;
-use rand::{task_rng, Rng};
+use std::rand;
+use std::rand::{task_rng, Rng};
 use onion::pipe::{PipeControl};
 use onion::consts::{META_REQUEST, ONION_FORWARD_REQUEST, FAKE_ID, CRYPTO,
                     CRYPTO_PACKET_FRIEND_REQ};
@@ -466,7 +466,7 @@ struct Contact {
 
 impl Contact {
     fn new() -> Contact {
-        let mut contact: Contact = unsafe { mem::init() };
+        let mut contact: Contact = unsafe { mem::zeroed() };
         contact.data_key = None;
         contact
     }
@@ -624,7 +624,7 @@ impl Client {
         if nospam.as_slice() != self.nospam {
             return other_error();
         }
-        let msg: ~str = try!(data.read_struct());
+        let msg: String = try!(data.read_struct());
         self.messenger.friend_request(source, msg);
         Ok(())
     }

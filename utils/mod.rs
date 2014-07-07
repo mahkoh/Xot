@@ -3,7 +3,7 @@ use std::io::{IoResult, MemWriter, MemReader, OtherIoError, standard_error,
 use crypt::Machine;
 use std::str::{from_utf8};
 
-pub mod ringbuffer;
+#[deprecated] pub mod ringbuffer;
 pub mod time;
 pub mod bufreader;
 
@@ -131,18 +131,20 @@ impl<'a> Writable for &'a [u32] {
     }
 }
 
-impl Readable for ~str {
-    fn read_from(r: &mut Reader) -> IoResult<~str> {
+impl Readable for String {
+    fn read_from(r: &mut Reader) -> IoResult<String> {
         let data = try!(r.read_to_end());
         match from_utf8(data.as_slice()) {
-            Some(string) => Ok(string.to_owned()),
+            Some(string) => Ok(string.to_string()),
             None => other_error(),
         }
     }
 }
 
+#[deprecated]
 pub fn parse_hex(s: &str, buf: &mut [u8]) -> Result<(),()> {
-    if s.len() != 2*buf.len() {
+    unimplemented!();
+/*    if s.len() != 2*buf.len() {
         return Err(());
     }
     for i in range(0u, buf.len()) {
@@ -155,7 +157,7 @@ pub fn parse_hex(s: &str, buf: &mut [u8]) -> Result<(),()> {
             }
         }
     }
-    return Ok(());
+    return Ok(());*/
 }
 
 pub trait LastN {

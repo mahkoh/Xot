@@ -1,4 +1,4 @@
-#![crate_id = "xot"]
+#![crate_name = "xot"]
 #![crate_type = "lib"]
 #![feature(globs)]
 #![feature(macro_rules)]

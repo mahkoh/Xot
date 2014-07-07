@@ -2,7 +2,7 @@ use libc::{c_int, c_void, socklen_t};
 use libc::{SOL_SOCKET, SO_BROADCAST, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP};
 
 use std::mem;
-use std::cast::{transmute};
+use std::mem::{transmute};
 
 use self::options::structs::*;
 

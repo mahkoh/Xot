@@ -6,8 +6,7 @@ use libc::{AF_INET, AF_INET6, c_int};
 use net::sockets::{UdpWriter, UdpReader};
 use crypt::{Key};
 use std::{mem};
-use std::mem::{to_be16, from_be16};
-use std::cast::{transmute};
+use std::mem::{transmute, to_be16, from_be16};
 
 pub mod sockets;
 
@@ -18,7 +17,7 @@ pub struct Node {
 
 impl Node {
     pub fn new() -> Node {
-        unsafe { mem::init() }
+        unsafe { mem::zeroed() }
     }
 
     pub fn parse4(data: &[u8]) -> IoResult<Vec<Node>> {
@@ -174,8 +173,8 @@ impl IpAddrInfo for IpAddr {
             },
             Ipv6Addr(a, b, c, d, e, f, g, h) => {
                 let x: [u8, ..16] = unsafe {
-                    let arr = [to_be16(a), to_be16(b), to_be16(c), to_be16(d),
-                               to_be16(e), to_be16(f), to_be16(g), to_be16(h)];
+                    let arr = [a.to_be(), b.to_be(), c.to_be(), d.to_be(),
+                               e.to_be(), f.to_be(), g.to_be(), h.to_be()];
                     transmute(arr)
                 };
                 if x[0] == 0xFF && x[1] < 3 && x[15] == 1 {
@@ -215,8 +214,8 @@ impl IpAddrInfo for IpAddr {
             Ipv4Addr(a, b, c, d) => a == 255 && b == 255 && c == 255 && d == 255,
             Ipv6Addr(a, b, c, d, e, f, g, h) =>
                 // all nodes multicast
-                a == from_be16(0xFF02) && b == 0 && c == 0 && d == 0 && e == 0 &&
-                    f == 0 && g == 0 && h == from_be16(0x0001),
+                a == Int::from_be(0xFF02) && b == 0 && c == 0 && d == 0 && e == 0 &&
+                    f == 0 && g == 0 && h == Int::from_be(0x0001),
         }
     }
 }

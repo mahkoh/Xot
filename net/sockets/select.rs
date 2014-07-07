@@ -14,7 +14,7 @@ mod select {
     #[link(name = "ws2_32")]
     extern "system" {
         pub fn select(nfds: c_int, readfds: *mut FdSetInt, writefds: *mut FdSetInt,
-                      exceptfds: *mut FdSetInt, timeout: *timeval) -> c_int;
+                      exceptfds: *mut FdSetInt, timeout: *const timeval) -> c_int;
     }
 
     pub static FD_SETSIZE: uint = 64;
@@ -30,7 +30,7 @@ mod select {
 
     impl FdSet {
         pub fn zero() -> FdSet {
-            unsafe { mem::init() }
+            unsafe { mem::zeroed() }
         }
 
         pub fn set(&mut self, fd: sock_t) {
@@ -81,7 +81,7 @@ mod select {
 
     extern {
         fn select(nfds: c_int, readfds: *mut FdSetInt, writefds: *mut FdSetInt,
-                  errorfds: *mut FdSetInt, timeout: *timeval) -> c_int;
+                  errorfds: *mut FdSetInt, timeout: *const timeval) -> c_int;
     }
 
     #[cfg(target_os = "macos")]
@@ -109,7 +109,7 @@ mod select {
     impl FdSet {
         /// Returns an empty `FdSet`.
         pub fn zero() -> FdSet {
-            unsafe { mem::init() }
+            unsafe { mem::zeroed() }
         }
 
         /// Sets a file descriptor.

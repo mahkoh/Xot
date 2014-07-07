@@ -5,7 +5,7 @@
 use crypt::{Key, SecretKey, PrecomputedKey};
 use time::{get_time};
 use std::{u8,u64};
-use std::cast::{transmute_lifetime};
+use std::mem::{transmute};
 
 /// Time in seconds before the precomputed key is considered dead.
 static TIMEOUT:       i64 = 600;
@@ -61,7 +61,7 @@ impl<'a> Keylocker {
                 entry.request_count += 1;
                 entry.last_requested = get_time().sec;
                 // Borrow checker thinks this return doesn't stop the loop.
-                return unsafe { transmute_lifetime(&entry.computed) };
+                return unsafe { transmute(&entry.computed) };
             }
             if min_requested > 0 {
                 if entry.timed_out() {

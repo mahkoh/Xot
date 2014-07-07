@@ -4,7 +4,8 @@ use libc::{c_uchar, c_int, c_ulonglong, size_t, c_void};
 use libc::funcs::posix88::mman::{mlock, munlock};
 use rand;
 use rand::{Rng};
-use rand::os::{OSRng};
+use std::slice::bytes::{copy_memory};
+use std::rand::{OsRng};
 use std::mem;
 use std::io::{IoResult, MemWriter, standard_error, OtherIoError};
 use std::hash::{Hash};
@@ -17,16 +18,16 @@ use std::intrinsics::{volatile_set_memory};
 extern {
     fn sodium_init();
     fn crypto_box_keypair(pk: *mut c_uchar, sk: *mut c_uchar) -> c_int;
-    fn crypto_hash_sha256(h: *mut c_uchar, m: *c_uchar, len: c_ulonglong) -> c_int;
-    fn crypto_box_beforenm(k: *mut c_uchar, pk: *c_uchar, sk: *c_uchar) -> c_int;
-    fn crypto_box_afternm(c: *mut c_uchar, m: *c_uchar, len: c_ulonglong, n: *c_uchar,
-                          k: *c_uchar) -> c_int;
-    fn crypto_box_open_afternm(m: *mut c_uchar, c: *c_uchar, len: c_ulonglong,
-                               n: *c_uchar, k: *c_uchar) -> c_int;
-    fn crypto_secretbox(c: *mut c_uchar, m: *c_uchar, len: c_ulonglong, n: *c_uchar,
-                        k: *c_uchar) -> c_int;
-    fn crypto_secretbox_open(m: *mut c_uchar, c: *c_uchar, len: c_ulonglong, n: *c_uchar,
-                             k: *c_uchar) -> c_int;
+    fn crypto_hash_sha256(h: *mut c_uchar, m: *const c_uchar, len: c_ulonglong) -> c_int;
+    fn crypto_box_beforenm(k: *mut c_uchar, pk: *const c_uchar, sk: *const c_uchar) -> c_int;
+    fn crypto_box_afternm(c: *mut c_uchar, m: *const c_uchar, len: c_ulonglong, n: *const c_uchar,
+                          k: *const c_uchar) -> c_int;
+    fn crypto_box_open_afternm(m: *mut c_uchar, c: *const c_uchar, len: c_ulonglong,
+                               n: *const c_uchar, k: *const c_uchar) -> c_int;
+    fn crypto_secretbox(c: *mut c_uchar, m: *const c_uchar, len: c_ulonglong, n: *const c_uchar,
+                        k: *const c_uchar) -> c_int;
+    fn crypto_secretbox_open(m: *mut c_uchar, c: *const c_uchar, len: c_ulonglong, n: *const c_uchar,
+                             k: *const c_uchar) -> c_int;
 }
 
 pub static KEY:     uint = 32;
@@ -58,7 +59,7 @@ pub struct Machine<'a> {
 
 impl<'a> Machine<'a> {
     /// Encrypts data and writes to a Writer.
-    /// 
+    ///
     /// Returns the result of the write operation.
     pub fn encrypt_to(&self, data: &[u8], writer: &mut Writer) -> IoResult<()> {
         let mut plain = Vec::with_capacity(data.len() + ZERO);
@@ -71,7 +72,7 @@ impl<'a> Machine<'a> {
 
         unsafe {
             match self.kind {
-                Symmetric => 
+                Symmetric =>
                     crypto_secretbox(encrypted.as_mut_ptr(), plain.as_ptr(),
                                      plain.len() as c_ulonglong, nonce.as_ptr(),
                                      key.as_ptr()),
@@ -92,7 +93,7 @@ impl<'a> Machine<'a> {
     }
 
     /// Decrypts data and writes to a Writer.
-    /// 
+    ///
     /// Returns Err(()) if decryption or the write operation fail.
     pub fn decrypt_to(&self, data: &[u8], writer: &mut Writer) -> IoResult<()> {
         let mut encrypted = Vec::with_capacity(data.len() + BOXZERO);
@@ -105,7 +106,7 @@ impl<'a> Machine<'a> {
 
         let rv = unsafe {
             match self.kind {
-                Symmetric => 
+                Symmetric =>
                     crypto_secretbox_open(plain.as_mut_ptr(), encrypted.as_ptr(),
                                           encrypted.len() as c_ulonglong,
                                           nonce.as_ptr(), key.as_ptr()),
@@ -122,7 +123,7 @@ impl<'a> Machine<'a> {
     }
 
     /// Decrypts data.
-    /// 
+    ///
     /// Returns None if the decryption fails.
     pub fn decrypt(&self, data: &[u8]) -> IoResult<Vec<u8>> {
         let mut w = MemWriter::new();
@@ -196,13 +197,13 @@ impl Writable for Key {
 
 impl Readable for Key {
     fn read_from(r: &mut Reader) -> IoResult<Key> {
-        let mut key: [u8, ..KEY] = unsafe { mem::uninit() };
-        try!(r.fill(key.as_mut_slice()));
+	    let mut key: [u8, ..KEY] = unsafe { mem::uninitialized() };
+        copy_memory(key.as_mut_slice(), try!(r.read_exact(KEY - 1)).as_slice());
         Ok(Key(key))
     }
 }
 
-impl Eq for Key {
+impl PartialEq for Key {
     fn eq(&self, other: &Key) -> bool {
         let &Key(ref my) = self;
         let &Key(ref their) = other;
@@ -210,7 +211,7 @@ impl Eq for Key {
     }
 }
 
-impl TotalEq for Key { }
+impl Eq for Key { }
 
 impl Hash for Key {
     fn hash(&self, state: &mut SipState) {
@@ -221,14 +222,14 @@ impl Hash for Key {
 
 /// Key that must not be swapped to disk and has to be securely erased.
 pub struct SecretKey {
-    key: ~[u8, ..KEY],
+    key: [u8, ..KEY],
 }
 
 impl SecretKey {
     /// Create a new `SecretKey` initialized to zero.
     fn new() -> SecretKey {
-        let key = box() ([0u8, ..KEY]);
-        unsafe { assert_eq!(mlock(key.as_ptr() as *c_void, KEY as size_t), 0); }
+        let key = [0u8, ..KEY];
+        unsafe { assert_eq!(mlock(key.as_ptr() as *const c_void, KEY as size_t), 0); }
         SecretKey { key: key }
     }
 }
@@ -237,24 +238,24 @@ impl Drop for SecretKey {
     fn drop(&mut self) {
         unsafe {
             volatile_set_memory(self.key.as_mut_ptr(), 0, KEY);
-            munlock(self.key.as_ptr() as *c_void, KEY as size_t);
+            munlock(self.key.as_ptr() as *const c_void, KEY as size_t);
         }
     }
 }
 
 impl Clone for SecretKey {
     fn clone(&self) -> SecretKey {
-        let mut new_key = box() ([0u8, ..KEY]);
-        unsafe { assert_eq!(mlock(new_key.as_ptr() as *c_void, KEY as size_t), 0); }
-        *new_key = *self.key;
+        let mut new_key = [0u8, ..KEY];
+        unsafe { assert_eq!(mlock(new_key.as_ptr() as *const c_void, KEY as size_t), 0); }
+        new_key = self.key;
         SecretKey { key: new_key }
     }
 }
 
 /// Generate a new key for symmetric encryption.
 pub fn key() -> Key {
-    let mut key: [u8, ..KEY] = unsafe { mem::uninit() };
-    OSRng::new().unwrap().fill_bytes(key.as_mut_slice());
+    let mut key: [u8, ..KEY] = unsafe { mem::uninitialized() };
+    OsRng::new().unwrap().fill_bytes(key.as_mut_slice());
     Key(key)
 }
 
@@ -264,7 +265,7 @@ pub fn key() -> Key {
 /// The second key is the public key.
 pub fn key_pair() -> (SecretKey, Key) {
     let mut secret = SecretKey::new();
-    let mut public: [u8, ..KEY] = unsafe { mem::uninit() };
+    let mut public: [u8, ..KEY] = unsafe { mem::uninitialized() };
     unsafe { crypto_box_keypair(public.as_mut_ptr(), secret.key.as_mut_ptr()); }
     (secret, Key(public))
 }
@@ -275,8 +276,8 @@ pub struct Nonce([u8, ..NONCE]);
 impl<'a> Nonce {
     /// Generate a new random nonce.
     pub fn random() -> Nonce {
-        let mut nonce: [u8, ..NONCE] = unsafe { mem::uninit() };
-        OSRng::new().unwrap().fill_bytes(nonce.as_mut_slice());
+        let mut nonce: [u8, ..NONCE] = unsafe { mem::uninitialized() };
+        OsRng::new().unwrap().fill_bytes(nonce.as_mut_slice());
         Nonce(nonce)
     }
 
@@ -307,8 +308,8 @@ impl Writable for Nonce {
 
 impl Readable for Nonce {
     fn read_from(r: &mut Reader) -> IoResult<Nonce> {
-        let mut nonce: [u8, ..NONCE] = unsafe { mem::uninit() };
-        try!(r.fill(nonce.as_mut_slice()));
+        let mut nonce: [u8, ..NONCE] = unsafe { mem::uninitialized() };
+        copy_memory(nonce.as_mut_slice(), try!(r.read_exact(NONCE - 1)).as_mut_slice());
         Ok(Nonce(nonce))
     }
 }
@@ -325,7 +326,7 @@ impl<'a> PrecomputedKey {
     /// The second key is the other party's public key.
     pub fn new(secret: &SecretKey, &Key(ref public): &Key) -> PrecomputedKey {
         unsafe {
-            let mut key: [u8, ..KEY] = mem::uninit();
+            let mut key: [u8, ..KEY] = mem::uninitialized();
             crypto_box_beforenm(key.as_mut_ptr(), public.as_ptr(), secret.key.as_ptr());
             PrecomputedKey {
                 key: Key(key)
@@ -346,7 +347,7 @@ impl<'a> PrecomputedKey {
 /// Hash data
 pub fn hash(data: &[u8]) -> [u8, ..HASH] {
     unsafe {
-        let mut hash: [u8, ..HASH] = unsafe { mem::uninit() };
+        let mut hash: [u8, ..HASH] = mem::uninitialized();
         crypto_hash_sha256(hash.as_mut_ptr(), data.as_ptr(), data.len() as c_ulonglong);
         hash
     }
