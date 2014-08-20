@@ -1,1 +1,1 @@
-go away
+On hold until Tox gets proper docs.
